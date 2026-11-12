@@ -127,8 +127,9 @@ export const createBuildConfig = (overrides = {}) => {
       '.eot': 'empty'
     },
     assetNames: '[name]', // Use original filename without hash
-    // Mermaid is loaded separately via script tag to keep bundle size manageable
-    external: ['mermaid', 'web-worker'],
+    // Mermaid is loaded separately via script tag to keep bundle size manageable.
+    // @vscode/diff has an unreachable Node-only dynamic import in the browser.
+    external: ['mermaid', 'web-worker', 'node:fs/promises'],
     minify: !options.development,
     sourcemap: options.development,
     plugins: [
@@ -165,6 +166,7 @@ export const createBuildConfig = (overrides = {}) => {
             try {
               const fileCopies = [
                 { src: options.manifestPath, dest: `${options.outdir}/manifest.json`, log: `📄 Copied manifest.json from ${path.dirname(options.manifestPath)}/` },
+                { src: 'THIRD_PARTY_NOTICES.md', dest: `${options.outdir}/THIRD_PARTY_NOTICES.md` },
                 { src: 'chrome/src/popup/popup.html', dest: `${options.outdir}/ui/popup/popup.html` },
                 { src: 'chrome/src/popup/popup.css', dest: `${options.outdir}/ui/popup/popup.css` },
                 { src: 'chrome/src/workspace/workspace.html', dest: `${options.outdir}/ui/workspace/workspace.html` },

@@ -1,6 +1,6 @@
 # 浏览器编辑 Markdown 与原文件保存
 
-> 调研与实现约束，2026-11-12。适用于本 fork 的 Chrome / Edge 源码编辑器；Firefox、移动端和在线文档不承诺相同能力。
+> 调研与实现约束，2026-11-13。适用于本 fork 的 Chrome / Edge 混合编辑器与源码编辑器；Firefox、移动端和在线文档不承诺相同能力。
 
 ## 结论
 
@@ -20,6 +20,36 @@
 | 不支持 File System Access API 的浏览器 | 下载副本或交由原生助手保存 | 不伪装成原文件写回 |
 
 `showOpenFilePicker()` 在 MDN 中仍标为 **Limited availability**，因此运行时必须做能力检测，不能只凭 Chromium 内核名称假定所有上下文均可用。
+
+## 混合编辑架构
+
+编辑入口默认是单栏 **Preview**：非活动块显示渲染结果，点击块后直接编辑该块的 Markdown 源码；**Source** 保留原 textarea 与旧分栏预览，作为特殊语法和兼容性兜底。两个视图共享保存状态、Ctrl/Cmd+S、dirty、外部修改冲突条和同一份权威源文本，不是两个独立文档。
+
+```mermaid
+%%{init: {'theme':'dark','themeVariables':{'background':'#0d1117','primaryColor':'#1f6feb','primaryTextColor':'#ffffff','primaryBorderColor':'#79c0ff','secondaryColor':'#21262d','tertiaryColor':'#30363d','lineColor':'#8b949e','textColor':'#e6edf3','clusterBkg':'#161b22','clusterBorder':'#58a6ff','edgeLabelBackground':'#21262d','fontSize':'15px'}}}%%
+flowchart TD
+  A["文件原始 Markdown"] --> B["共享权威源文本与 dirty 状态"]
+  B --> C["Preview：EditorModel.sourceText"]
+  B --> D["Source：textarea 编辑镜像"]
+  C --> E["非活动块显示渲染结果"]
+  C --> F["活动块显示并编辑原始源码"]
+  E --> G["图表点击：AST codeOffset → Selection"]
+  D --> H["完整源文本快照"]
+  F --> H
+  H --> I["现有 MAIN world 原文件保存"]
+  H --> J["退出编辑"]
+  J --> K["旧渲染器恢复完整预览、目录、锚点与导出 DOM"]
+```
+
+实现复用 **`@vscode/markdown-editor@0.0.2-179`** 的 `EditorModel`、`EditorView`、`EditorController` 和 `LocalHistoryStrategy`。`EditorModel.sourceText` 保存精确 Markdown，不做任意 HTML → Markdown 往返；保存直接读取完整模型快照。权威外部内容通过 `replaceSourceText()` 载入，并抑制初始化及回显过程中的 `onInput`，防止空内容覆盖草稿。
+
+### 渲染与源码边界
+
+- **Preview 输入不重绘旧阅读 DOM。** 每次输入只更新源文本和 dirty；Source 输入才继续排队更新旧分栏预览。退出编辑时，按 `sourceEditorPreviewContent` 判断是否需要用最新源文本恢复完整阅读 DOM。
+- **textarea 不是换行的权威存储。** DOM 的 `textarea.value` 会把 CRLF 规范化为 LF，因此 `sourceContent` 独立保存精确文本。仅切换 Preview/Source 不改源文本；在 Source 中实际编辑后，沿用首次载入时检测出的 CRLF/LF 风格。混合文件的原始字节在未编辑时保留，实际 Source 编辑不承诺逐行保留混合换行。
+- **图表继续走原安全渲染服务。** Mermaid 等非活动 fence 复用 `platform.renderer.render()` 和 `createPluginResultElement()`。组件对自定义块缺少可靠命中映射，因此占位根节点的 `pointerdown` 通过 AST 累计偏移和 `CodeBlockAstNode.codeOffset` 设置 `Selection.collapsed()`；收集时排除已展开的活动图表，保证连续点击多个图表不会错位。渲染失败保留原始 fence 可编辑。
+- **同源文本，不等于同渲染管线。** Preview 使用 VS Code 组件内建的 Markdown 块渲染；完整阅读态继续使用原 markdown-it、目录、锚点、图表和导出管线。Slidev、HTML 转 Markdown、workspace/嵌入模式不开放本地源码编辑入口。
+- **运行要求是支持 `EditContext` 的现代 Chromium。** 当前构建目标为 Chrome 120；旧浏览器或不完整实现应使用 Source 兜底，不应把混合编辑器退化为简单 `contenteditable`。
 
 ## 保存架构
 
@@ -60,24 +90,31 @@ flowchart TD
 1. **原文件保存与副本保存必须可区分。** 本地 `file://` 使用 `showOpenFilePicker()`；在线文档才使用 `showSaveFilePicker()` 或下载。
 2. **本地失败不静默下载。** 授权失败、API 不可用或写入异常时保留 dirty，并显示真实错误；不得让“下载成功”掩盖原文件未写入。
 3. **快捷键在编辑态优先处理。** 编辑器创建后立即绑定捕获阶段 Ctrl/Cmd+S，阻止 Edge 默认 Save Page 和后续工具栏监听器重复处理。
-4. **保存以完整源码为真源。** 保留末尾换行，不从渲染 DOM 反推 Markdown。
+4. **保存以完整源码为真源。** 保留末尾换行，不从渲染 DOM 或 textarea 的换行规范化结果反推 Markdown。
 5. **句柄与文档一一对应。** 中文路径和 `#` 锚点不得改变本地文档判断；文档切换后不得复用旧句柄。
 6. **失败写入不能提交半份文件。** `createWritable()` 后执行 `write()`，仅在成功时 `close()`；异常时 `abort()`。
 7. **保存期间继续输入仍保持未保存。** 只更新本次快照的保存基线，不能把较新的输入一并标为已保存。
 8. **外部磁盘修改不得静默覆盖草稿。** 冲突由用户明确选择加载磁盘版本或保留草稿。
 9. **句柄复用不能被重载或重复注入重置。** 优先读取 MAIN world 内存，再恢复 IndexedDB，最后才显示 picker；恢复后仍须重新核验 `readwrite` 权限。
+10. **Preview 与 Source 不得产生两份草稿。** 模式切换、任务框、图表 fence 编辑和撤销/重做都更新同一权威源文本。
+11. **混合输入不能销毁自身。** 旧阅读渲染器不得在 Preview 每次按键时替换编辑 DOM；退出编辑才恢复最新完整预览。
 
 ## 验收矩阵
 
 | 层级 | 能验证什么 | 不能替代什么 |
 |---|---|---|
 | 保存模块契约测试 | picker 分支、句柄复用、精确文本、取消、异常 abort、本地失败不下载 | 真实系统对话框与真实磁盘 |
-| 安装扩展 E2E（Playwright Chromium / 本机 Edge） | 中文路径＋编码锚点、真实 Ctrl+S 事件、MAIN world 桥、dirty、保存期间继续输入、真实 OPFS 句柄在重复注入与重载后恢复 | 本地文件原生授权 UI 与真实磁盘覆盖 |
+| 安装扩展混合编辑 E2E | 渲染标题真实键盘输入、undo/redo、任务框、双 Mermaid 点击、CRLF、Preview/Source 往返、冲突保护、退出恢复 | 中文 IME、所有图表类型与所有主题的人工视觉验收 |
+| 安装扩展保存 E2E（Playwright Chromium / 本机 Edge） | 中文路径＋编码锚点、真实 Ctrl+S 事件、MAIN world 桥、dirty、保存期间继续输入、真实 OPFS 句柄在重复注入与重载后恢复 | 本地文件原生授权 UI 与真实磁盘覆盖 |
 | 真实 Edge 人工验收 | 原生“打开”授权、连续保存与重载后免选择器、磁盘文件确实更新、Edge 默认另存为被拦截 | — |
 | Edge ZIP 完整性检查 | 构建入口、文件清单、压缩包 CRC | 编辑器行为正确性 |
 
 真实 Edge 验收使用临时 Markdown 副本，不使用用户原始调研文件做写入测试：
 
+- [ ] Preview 中点击标题、段落和列表，真实输入、撤销/重做及中文 IME 正常；Source 往返不丢文本。
+- [ ] Mermaid、PlantUML 非活动块正常显示，点击后编辑对应原始 fence；至少连续点击两个图表确认映射。
+- [ ] 切换明暗主题并检查窄屏布局；图表、正文、活动源码和状态栏保持可读。
+- [ ] 退出编辑后恢复完整预览、目录、锚点与导出 DOM；未保存关闭或导航仍触发离开保护。
 - [ ] 编辑临时副本后按 Ctrl+S，不出现浏览器“网页另存为”。
 - [ ] 第一次本地保存只要求通过“打开”对话框选择当前文件；后续保存复用句柄。
 - [ ] 保存后重载同一 Markdown，再按 Ctrl+S，只核验权限，不要求重新从文件夹选择文件。
@@ -97,6 +134,11 @@ flowchart TD
 | [MDN：FileSystemFileHandle.createWritable()](https://developer.mozilla.org/en-US/docs/Web/API/FileSystemFileHandle/createWritable) | readwrite 权限；通常先写临时文件，close 后替换目标 |
 | [VS Code：浏览器文件选择与句柄注册](https://github.com/microsoft/vscode/blob/main/src/vs/workbench/services/dialogs/browser/fileDialogService.ts) | 网页版使用 showOpenFilePicker / showSaveFilePicker 区分打开与另存 |
 | [VS Code：浏览器文件系统写入](https://github.com/microsoft/vscode/blob/main/src/vs/platform/files/browser/htmlFileSystemProvider.ts) | 文件句柄注册、IndexedDB 持久化、createWritable → write → close |
+| [VS Code：Markdown 编辑器接入层](https://github.com/microsoft/vscode/blob/c1263db0c58cde7cd15e9be2e53b255acd3f1629/extensions/markdown-language-features/src/preview/markdownEditorProvider.ts) | TextDocument 唯一真源、权威文本替换与保存职责 |
+| [VS Code：混合编辑器浏览器前端](https://github.com/microsoft/vscode/blob/c1263db0c58cde7cd15e9be2e53b255acd3f1629/extensions/markdown-language-features/markdown-editor-src/editor.ts) | EditorModel、EditorView、EditorController 与历史策略组合 |
+| [@vscode/markdown-editor 0.0.2-179](https://www.npmjs.com/package/@vscode/markdown-editor/v/0.0.2-179) | 非活动块渲染、活动块编辑精确 Markdown；独立浏览器宿主公开 API |
+| [VS Code：Markdown 编辑器构建配置](https://github.com/microsoft/vscode/blob/c1263db0c58cde7cd15e9be2e53b255acd3f1629/extensions/markdown-language-features/esbuild.markdownEditor.mts) | 浏览器 external 与字体打包方式 |
+| [MIT 许可文本](https://github.com/microsoft/vscode/blob/main/LICENSE.txt) | 本 fork 随构建附带的 VS Code Markdown 编辑器许可依据；组件 package.json 声明 MIT |
 | [WICG/file-system-access #289](https://github.com/WICG/file-system-access/issues/289) | 扩展句柄权限提示问题；维护者归类为 Chromium 实现问题 |
 | [WICG/file-system-access #314](https://github.com/WICG/file-system-access/issues/314) | 扩展目录选择器失败；规范仓库不作为规范问题处理 |
 | [WICG/file-system-access #297](https://github.com/WICG/file-system-access/issues/297) | 权限持久化演进；Chromium 122 起改善跨会话权限体验 |
