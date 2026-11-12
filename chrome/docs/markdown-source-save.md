@@ -4,7 +4,7 @@
 
 ## 结论
 
-浏览器可以编辑 Markdown 并覆盖本地原文件，但不能仅凭 `file:///...` 地址静默写入。正确方式是：**用户交互 → 明确选择文件 → 取得文件句柄与写权限 → 写入并关闭流**。首次授权后，同一页面生命周期内复用句柄，后续 Ctrl+S 不应再次弹选择器，也不应退化为下载副本。
+浏览器可以编辑 Markdown 并覆盖本地原文件，但不能仅凭 `file:///...` 地址静默写入。正确方式是：**用户交互 → 明确选择文件 → 取得文件句柄与写权限 → 写入并关闭流**。首次授权后，句柄同时保存在 MAIN world 内存注册表和 IndexedDB；后续 Ctrl+S 及页面重载都应复用或恢复句柄、重新核验写权限，而不是再次弹文件选择器，也不应退化为下载副本。
 
 如果编辑态 Ctrl+S 仍出现浏览器“网页另存为”，说明快捷键没有进入编辑器保存逻辑；如果出现 `showSaveFilePicker()` 或下载，则说明走到了“保存副本”分支。这两种情况都不能记作原文件写回成功。
 
@@ -31,13 +31,15 @@ flowchart TD
   B -->|"是"| D["捕获阶段阻止浏览器网页另存为"]
   D --> E{"当前文档是否为 file URL"}
   E -->|"否"| F["Save As 或下载副本并明确提示"]
-  E -->|"是"| G{"MAIN world 是否已有当前文档句柄"}
-  G -->|"否"| H["showOpenFilePicker 选择原 Markdown"]
+  E -->|"是"| G{"MAIN world 内存是否有当前文档句柄"}
+  G -->|"否"| R{"IndexedDB 是否能恢复句柄"}
+  R -->|"否"| H["showOpenFilePicker 选择原 Markdown"]
   H --> I{"用户是否完成授权"}
   I -->|"取消"| J["保留 dirty，不写文件、不下载副本"]
   I -->|"失败"| K["显示具体错误并保留草稿"]
-  I -->|"成功"| L["保存 FileSystemFileHandle"]
+  I -->|"成功"| L["句柄写入内存注册表与 IndexedDB"]
   G -->|"是"| M["queryPermission / requestPermission readwrite"]
+  R -->|"是"| M
   L --> M
   M --> N["createWritable → write → close"]
   N --> O{"close 是否成功"}
@@ -49,7 +51,9 @@ flowchart TD
 
 扩展 isolated world 与页面 MAIN world 都能看见部分 Web API，不代表权限行为相同。WICG 的扩展相关 issue 记录了文件选择器、句柄权限提示的 Chromium 实现问题。因此本 fork 让页面 MAIN world 持有 `FileSystemFileHandle`，isolated world 只通过 DOM `CustomEvent` 传递文本请求与状态。
 
-活文件句柄不跨 world 传递；句柄按去掉锚点后的文档 URL 隔离，避免页内打开另一份 Markdown 后误写旧文件。这个架构是规避已知扩展上下文问题的实现选择，**不是对真实 Edge 原生对话框和磁盘写入的自动化测试替代品**。
+活文件句柄不跨 world 传递；句柄按去掉锚点后的文档 URL 隔离，避免页内打开另一份 Markdown 后误写旧文件。内存注册表保留在首次注入的闭包中，`ready` 标记防止重复注入时重置；IndexedDB 负责页面重载后的恢复。句柄不挂到 `window`，避免把写权限暴露给其他页面脚本。持久化失败不阻断本次保存，当前页仍走内存复用。
+
+本机 Edge 实测确认 `file://` 页面可使用并在重载后保留 IndexedDB，但不能使用 OPFS（`navigator.storage.getDirectory()` 抛 `SecurityError`）。因此持久化自动化在扩展源页面取得真实、可序列化的 OPFS `FileSystemFileHandle`；本地文件页的 picker 仍使用 mock。这个架构是规避已知扩展上下文问题的实现选择，**不是对真实 Edge 原生对话框和磁盘写入的自动化测试替代品**。
 
 ## 实现不变量
 
@@ -61,20 +65,22 @@ flowchart TD
 6. **失败写入不能提交半份文件。** `createWritable()` 后执行 `write()`，仅在成功时 `close()`；异常时 `abort()`。
 7. **保存期间继续输入仍保持未保存。** 只更新本次快照的保存基线，不能把较新的输入一并标为已保存。
 8. **外部磁盘修改不得静默覆盖草稿。** 冲突由用户明确选择加载磁盘版本或保留草稿。
+9. **句柄复用不能被重载或重复注入重置。** 优先读取 MAIN world 内存，再恢复 IndexedDB，最后才显示 picker；恢复后仍须重新核验 `readwrite` 权限。
 
 ## 验收矩阵
 
 | 层级 | 能验证什么 | 不能替代什么 |
 |---|---|---|
 | 保存模块契约测试 | picker 分支、句柄复用、精确文本、取消、异常 abort、本地失败不下载 | 真实系统对话框与真实磁盘 |
-| 安装扩展 E2E（Playwright Chromium） | 中文路径＋编码锚点、真实 Ctrl+S 事件、MAIN world 桥、dirty、保存期间继续输入 | Edge 品牌差异与原生授权 UI |
-| 真实 Edge 人工验收 | 原生“打开”授权、后续免选择器保存、磁盘文件确实更新、Edge 默认另存为被拦截 | — |
+| 安装扩展 E2E（Playwright Chromium / 本机 Edge） | 中文路径＋编码锚点、真实 Ctrl+S 事件、MAIN world 桥、dirty、保存期间继续输入、真实 OPFS 句柄在重复注入与重载后恢复 | 本地文件原生授权 UI 与真实磁盘覆盖 |
+| 真实 Edge 人工验收 | 原生“打开”授权、连续保存与重载后免选择器、磁盘文件确实更新、Edge 默认另存为被拦截 | — |
 | Edge ZIP 完整性检查 | 构建入口、文件清单、压缩包 CRC | 编辑器行为正确性 |
 
 真实 Edge 验收使用临时 Markdown 副本，不使用用户原始调研文件做写入测试：
 
 - [ ] 编辑临时副本后按 Ctrl+S，不出现浏览器“网页另存为”。
 - [ ] 第一次本地保存只要求通过“打开”对话框选择当前文件；后续保存复用句柄。
+- [ ] 保存后重载同一 Markdown，再按 Ctrl+S，只核验权限，不要求重新从文件夹选择文件。
 - [ ] 保存后磁盘内容逐字等于编辑器内容，状态为 `Saved to file`，dirty 清除。
 - [ ] 取消选择器后仍显示未保存，不产生下载副本。
 - [ ] 拒绝权限或写入失败时显示具体错误，原文件不被截断。
@@ -98,7 +104,7 @@ flowchart TD
 
 ## 当前排障边界
 
-自动化中的文件句柄是 mock，不能据此宣称原生 Edge 写回已经验收。真实 Edge 中若仍出现“另存为”，必须分别确认：
+本地文件页的自动化 picker 仍是 mock；真实 OPFS 句柄只验证序列化与恢复机制，不能据此宣称原生 Edge 本地文件写回已经验收。真实 Edge 中若仍反复出现文件选择器，必须分别确认：
 
 1. Ctrl+S 是否到达编辑器捕获监听器；
 2. 当前保存目标是 `file://` 还是在线 URL；
