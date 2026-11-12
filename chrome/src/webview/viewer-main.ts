@@ -1222,6 +1222,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     sourceEditor = createSourceEditor({
       host: sourceEditorHost,
       onInput: handleSourceEditorInput,
+      onSave: () => void saveSourceEditor(),
       onReloadExternal: () => void reloadExternalContent(),
       onDismissExternal: dismissExternalContent,
     });
@@ -1723,7 +1724,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     const writeBack = getActiveDocumentUrl().startsWith('file://');
     liveRawContent = content;
     sourceEditorSaving = true;
-    sourceEditorSaveStatus = 'Saving…';
+    sourceEditorSaveStatus = writeBack ? 'Saving to original file…' : 'Saving a copy…';
     updateSourceEditorState();
 
     try {
@@ -1755,8 +1756,8 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
           ? 'Copy downloaded'
           : writeBack ? 'Saved to file' : 'Copy saved';
     } catch (error) {
-      sourceEditorSaveStatus = 'Save failed';
       const message = error instanceof Error ? error.message : String(error);
+      sourceEditorSaveStatus = `Save failed: ${message}`;
       window.alert(`Could not save Markdown: ${message}`);
       logThenPermissionError('sourceEditor.save.failed', error);
     } finally {

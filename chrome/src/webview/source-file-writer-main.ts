@@ -54,7 +54,10 @@ if (document.documentElement.dataset.mvSourceFileWriter !== 'ready') {
         respond(request.requestId, 'cancelled');
         return;
       }
-      respond(request.requestId, 'failed', error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      respond(request.requestId, 'failed', error instanceof DOMException
+        ? `${error.name}: ${message}`
+        : message);
     }
   });
 
