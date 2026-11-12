@@ -65,6 +65,12 @@ export interface ToolbarManagerOptions {
   getSourceMode?: () => boolean;
   /** Whether current view should save raw file on Ctrl/Cmd+S */
   isSourceModeActive?: () => boolean;
+  /** Toggle the persistent Markdown source editor */
+  onToggleEditMode?: () => void;
+  /** Save the edited source through an authorized file handle or a copy */
+  onSaveSource?: () => Promise<void>;
+  /** Whether Ctrl/Cmd+S belongs to the source editor */
+  isEditModeActive?: () => boolean;
   /** Whether to show remark mode toggle button */
   enableRemarkMode?: boolean;
   /** Get the container for remark annotations (rendered markdown div) */
@@ -111,6 +117,8 @@ export interface ToolbarManagerInstance {
    * current file (markdown only), `sourceMode` follows the resolved view mode.
    */
   setSourceToggleState: (state: { supported: boolean; sourceMode: boolean }) => void;
+  /** Per-document source-editor availability, dirty state and save feedback. */
+  setEditState: (state: { supported: boolean; active: boolean; dirty: boolean; saving: boolean; status?: string }) => void;
   /** Show/hide the layout (width) control — hidden while code view is active. */
   setLayoutControlVisible: (visible: boolean) => void;
 }
