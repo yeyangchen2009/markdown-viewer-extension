@@ -194,4 +194,75 @@ describe('installed Chrome extension — Markdown source editor', { skip: SKIP_E
     assert.deepEqual(result.writes, [DRAFT, newerDraft], 'both writes preserve the exact source');
     assert.equal(await evalJs(page, `() => document.getElementById('save-source-btn').dataset.dirty`), 'false');
   });
+
+  it('restores a serialized file handle after reinjection and page reload', async () => {
+    // file:// supports IndexedDB but not OPFS in Edge. Use an extension-origin
+    // page to obtain a real serializable FileSystemFileHandle, then exercise the
+    // production MAIN-world writer without replacing its IndexedDB with a mock.
+    const durablePage = await harness.context.newPage();
+    const extensionPageUrl = `chrome-extension://${harness.extensionId}/ui/workspace/viewer-embed.html?embed=1`;
+    const saveThroughWriter = `(content) => new Promise((resolve) => {
+      const requestId = 'durable-handle-test';
+      const onResponse = (event) => {
+        if (event.detail?.requestId !== requestId) return;
+        document.removeEventListener('mv:source-file-save-response', onResponse);
+        resolve(event.detail);
+      };
+      document.addEventListener('mv:source-file-save-response', onResponse);
+      document.dispatchEvent(new CustomEvent('mv:source-file-save-request', {
+        detail: {
+          requestId,
+          content,
+          filename: 'durable.md',
+          mimeType: 'text/markdown',
+          writeBack: true,
+          handle: null,
+          documentUrl: 'file:///F:/fixtures/durable.md',
+        },
+      }));
+    })`;
+    try {
+      await durablePage.addInitScript(`(() => {
+        const state = window.__mvDurableHandleTest = { picks: 0 };
+        window.showOpenFilePicker = async () => {
+          state.picks += 1;
+          const root = await navigator.storage.getDirectory();
+          return [await root.getFileHandle('durable.md', { create: true })];
+        };
+      })()`);
+      await durablePage.goto(extensionPageUrl, { waitUntil: 'load' });
+      await waitFor(durablePage, VIEWER_EMBED_READY_JS);
+      const writerUrl = `chrome-extension://${harness.extensionId}/core/source-file-writer-main.js`;
+      await durablePage.addScriptTag({ url: writerUrl });
+      await waitFor(durablePage, `() => document.documentElement.dataset.mvSourceFileWriter === 'ready'`);
+
+      const first = await evalJs<{ status: string }>(durablePage, saveThroughWriter, '# first durable save\n');
+      assert.equal(first.status, 'written');
+      assert.equal(await evalJs(durablePage, `() => window.__mvDurableHandleTest.picks`), 1);
+
+      // Reinjecting into the same document must not reset the handle registry.
+      await durablePage.addScriptTag({ url: writerUrl });
+      const second = await evalJs<{ status: string }>(durablePage, saveThroughWriter, '# after reinjection\n');
+      assert.equal(second.status, 'written');
+      assert.equal(await evalJs(durablePage, `() => window.__mvDurableHandleTest.picks`), 1);
+
+      await durablePage.reload({ waitUntil: 'load' });
+      await waitFor(durablePage, VIEWER_EMBED_READY_JS);
+      await durablePage.addScriptTag({ url: writerUrl });
+      const third = await evalJs<{ status: string; error?: string }>(durablePage, saveThroughWriter, '# after reload\n');
+      assert.equal(third.status, 'written', third.error);
+      assert.equal(
+        await evalJs(durablePage, `() => window.__mvDurableHandleTest.picks`),
+        0,
+        'a reload restores the persisted handle instead of opening the picker',
+      );
+      assert.equal(await evalJs(durablePage, `async () => {
+        const root = await navigator.storage.getDirectory();
+        const handle = await root.getFileHandle('durable.md');
+        return (await handle.getFile()).text();
+      }`), '# after reload\n');
+    } finally {
+      await durablePage.close();
+    }
+  });
 });
