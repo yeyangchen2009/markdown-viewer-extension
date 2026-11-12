@@ -32,9 +32,9 @@ describe('installed Chrome extension — Markdown source editor', { skip: SKIP_E
 
   before(async () => {
     fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mv-source-editor-'));
-    const filename = path.join(fixtureDir, 'doc.md');
+    const filename = path.join(fixtureDir, '哥飞的朋友们-2026双11调研.md');
     fs.writeFileSync(filename, ORIGINAL, 'utf8');
-    fileUrl = pathToFileURL(filename).href;
+    fileUrl = `${pathToFileURL(filename).href}#${encodeURIComponent('二十信息来源与可信度分级')}`;
 
     harness = await launchExtensionContext('mv-source-editor-');
     page = await harness.context.newPage();
@@ -94,9 +94,13 @@ describe('installed Chrome extension — Markdown source editor', { skip: SKIP_E
       const tabs = await chrome.tabs.query({});
       const tab = tabs.find((item) => item.url === url);
       if (!tab?.id) throw new Error('fixture tab not found');
+      const documentUrl = new URL(url);
+      documentUrl.hash = '';
       await chrome.tabs.sendMessage(tab.id, {
         type: 'FILE_CHANGED',
-        payload: { url, content: text },
+        // The production tracker uses getCurrentDocumentUrl(), which strips
+        // anchors before registering and comparing the local document.
+        payload: { url: documentUrl.href, content: text },
       });
     }, { url: fileUrl, text: content });
   }
@@ -165,11 +169,12 @@ describe('installed Chrome extension — Markdown source editor', { skip: SKIP_E
       const input = document.getElementById('mv-source-editor-input');
       input.value = content;
       input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.focus();
       return true;
     }`;
 
     await evalJs(page, setInput, DRAFT);
-    await evalJs(page, `() => { document.getElementById('save-source-btn').click(); return true; }`);
+    await page.keyboard.press('Control+s');
     await waitFor(page, `() => window.__mvSourceSaveTest.pending.length === 1`);
     await evalJs(page, setInput, newerDraft);
     await evalJs(page, `() => { window.__mvReleaseSourceWrite(); return true; }`);

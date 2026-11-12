@@ -13,6 +13,7 @@ export interface SourceEditorController {
 interface SourceEditorOptions {
   host: HTMLElement;
   onInput: (content: string) => void;
+  onSave: () => void;
   onReloadExternal: () => void;
   onDismissExternal: () => void;
 }
@@ -72,6 +73,18 @@ export function createSourceEditor(options: SourceEditorOptions): SourceEditorCo
 
   pane.append(header, conflict, textarea);
   options.host.prepend(pane);
+
+  // Bind when the editor is created, not after the viewer's asynchronous boot.
+  // Capture prevents Edge's native Save Page shortcut and the toolbar's later
+  // bubble listener from turning an active editor save into Save As/DOCX.
+  document.addEventListener('keydown', (event) => {
+    if (pane.hidden || !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 's') {
+      return;
+    }
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    options.onSave();
+  }, true);
 
   return {
     setActive(active) {
