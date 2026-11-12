@@ -10,6 +10,17 @@ export interface SourceSaveRequest extends SourceSaveTarget {
   /** True for file:// documents, false for remote documents. */
   writeBack: boolean;
   handle: FileSystemFileHandle | null;
+  /** Separates in-place Markdown navigation within the same page. */
+  documentUrl?: string;
+}
+
+export const SOURCE_FILE_SAVE_REQUEST_EVENT = 'mv:source-file-save-request';
+export const SOURCE_FILE_SAVE_RESPONSE_EVENT = 'mv:source-file-save-response';
+
+interface SourceFileSaveResponse {
+  requestId: string;
+  status: 'written' | 'cancelled' | 'failed';
+  error?: string;
 }
 
 export interface SourceSaveResult {
@@ -22,7 +33,7 @@ type FilePickerWindow = Window & {
   showSaveFilePicker?: (options?: unknown) => Promise<FileSystemFileHandle>;
 };
 
-function pickerOptions(target: SourceSaveTarget, suggestedName?: string): Record<string, unknown> {
+export function sourceFilePickerOptions(target: SourceSaveTarget, suggestedName?: string): Record<string, unknown> {
   return {
     id: 'markdown-viewer-source-editor',
     ...(suggestedName ? { suggestedName } : {}),
@@ -37,7 +48,7 @@ function isPickerCancel(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError';
 }
 
-async function writeHandle(handle: FileSystemFileHandle, content: string): Promise<void> {
+export async function writeSourceFileHandle(handle: FileSystemFileHandle, content: string): Promise<void> {
   const permission = { mode: 'readwrite' as const };
   if (await handle.queryPermission(permission) !== 'granted') {
     if (await handle.requestPermission(permission) !== 'granted') {
@@ -56,6 +67,30 @@ async function writeHandle(handle: FileSystemFileHandle, content: string): Promi
   }
 }
 
+function saveThroughMainWorld(request: SourceSaveRequest): Promise<SourceSaveResult> {
+  const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return new Promise((resolve, reject) => {
+    const onResponse = (event: Event) => {
+      const detail = (event as CustomEvent<SourceFileSaveResponse>).detail;
+      if (!detail || detail.requestId !== requestId) return;
+      document.removeEventListener(SOURCE_FILE_SAVE_RESPONSE_EVENT, onResponse);
+      if (detail.status === 'written') {
+        // FileSystemFileHandle is intentionally kept in the MAIN world. Chrome
+        // extension messages/events cannot transfer a live handle between worlds.
+        resolve({ status: 'written', handle: null });
+      } else if (detail.status === 'cancelled') {
+        resolve({ status: 'cancelled', handle: null });
+      } else {
+        reject(new Error(detail.error || 'Could not write the local Markdown file'));
+      }
+    };
+    document.addEventListener(SOURCE_FILE_SAVE_RESPONSE_EVENT, onResponse);
+    document.dispatchEvent(new CustomEvent(SOURCE_FILE_SAVE_REQUEST_EVENT, {
+      detail: { ...request, requestId },
+    }));
+  });
+}
+
 /**
  * Save through an explicitly user-authorized File System Access handle. The
  * browser cannot derive a writable handle from file:// alone, so the first
@@ -66,15 +101,24 @@ export async function saveSourceFile(request: SourceSaveRequest): Promise<Source
   const pickerWindow = window as FilePickerWindow;
   let handle = request.handle;
 
+  // Edge can reject a picker invoked from the extension's isolated world. The
+  // MAIN-world writer owns local handles for this page and performs the same
+  // explicit picker → permission → atomic write sequence there instead.
+  if (request.writeBack && !handle
+    && typeof document !== 'undefined'
+    && document.documentElement.dataset.mvSourceFileWriter === 'ready') {
+    return saveThroughMainWorld(request);
+  }
+
   try {
     if (!handle) {
       if (request.writeBack && pickerWindow.showOpenFilePicker) {
         [handle] = await pickerWindow.showOpenFilePicker({
-          ...pickerOptions(request),
+          ...sourceFilePickerOptions(request),
           multiple: false,
         });
       } else if (!request.writeBack && pickerWindow.showSaveFilePicker) {
-        handle = await pickerWindow.showSaveFilePicker(pickerOptions(request, request.filename));
+        handle = await pickerWindow.showSaveFilePicker(sourceFilePickerOptions(request, request.filename));
       }
     }
   } catch (error) {
@@ -83,14 +127,18 @@ export async function saveSourceFile(request: SourceSaveRequest): Promise<Source
     }
     // Some content-script/page contexts expose the API but disallow invoking
     // it there. Keep a usable copy path instead of losing the edited text.
-    if (!(error instanceof DOMException) || error.name !== 'SecurityError') {
+    if (!(error instanceof DOMException) || error.name !== 'SecurityError' || request.writeBack) {
       throw error;
     }
   }
 
   if (handle) {
-    await writeHandle(handle, request.content);
+    await writeSourceFileHandle(handle, request.content);
     return { status: 'written', handle };
+  }
+
+  if (request.writeBack) {
+    throw new Error('Local file write-back is unavailable. Reload the Markdown page and try again; no copy was downloaded.');
   }
 
   await deliverFile({

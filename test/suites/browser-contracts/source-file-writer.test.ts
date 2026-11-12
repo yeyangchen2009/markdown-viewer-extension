@@ -92,6 +92,15 @@ describe('source-file-writer', () => {
     assert.equal(closed, false, 'a failed write must not close and commit the temporary file');
   });
 
+  it('does not silently turn a local picker security failure into a download', async () => {
+    (globalThis as { window?: unknown }).window = {
+      showOpenFilePicker: async () => { throw new DOMException('blocked', 'SecurityError'); },
+    };
+    await assert.rejects(saveSourceFile({
+      filename: 'doc.md', mimeType: 'text/markdown', content: 'draft', writeBack: true, handle: null,
+    }), /SecurityError|blocked/);
+  });
+
   it('keeps edits unsaved when the picker is cancelled', async () => {
     (globalThis as { window?: unknown }).window = {
       showOpenFilePicker: async () => { throw new DOMException('cancelled', 'AbortError'); },

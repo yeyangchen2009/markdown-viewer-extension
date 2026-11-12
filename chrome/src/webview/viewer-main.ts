@@ -1731,6 +1731,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
         ...getCurrentSaveTarget(),
         content,
         writeBack,
+        documentUrl: getActiveDocumentUrl(),
         handle: sourceFileHandle,
       });
       // A navigation while the picker/write was open must not apply the old

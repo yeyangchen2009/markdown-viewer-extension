@@ -1062,6 +1062,17 @@ async function handleContentScriptInjection(tabId: number, fromContextMenu = fal
       target: { tabId },
       files: ['core/inject-styles.js'],
     });
+    // File System Access pickers belong to the page's MAIN world. Keep this
+    // optional so older/non-Chromium hosts retain the direct save fallback.
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        world: 'MAIN',
+        files: ['core/source-file-writer-main.js'],
+      });
+    } catch (error) {
+      console.warn('[SourceEditor] MAIN-world file writer unavailable:', error);
+    }
     // Inject the viewer (handles markdown, .slides.md, and converted HTML)
     await chrome.scripting.executeScript({
       target: { tabId },

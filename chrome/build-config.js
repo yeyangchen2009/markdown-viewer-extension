@@ -91,6 +91,7 @@ export const createBuildConfig = (overrides = {}) => {
       'core/element-runtime-main': 'chrome/src/webview/element-runtime-main.ts',
       'core/runtime-bridge': 'chrome/src/webview/runtime-bridge.ts',
       'core/main': 'chrome/src/webview/main.ts',
+      'core/source-file-writer-main': 'chrome/src/webview/source-file-writer-main.ts',
       'core/html-to-markdown': 'chrome/src/webview/html-to-markdown.ts',
       'core/inject-styles': 'chrome/src/webview/inject-styles.ts',
       'core/inject-element-styles': 'chrome/src/webview/inject-element-styles.ts',

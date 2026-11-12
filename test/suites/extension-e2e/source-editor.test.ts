@@ -47,6 +47,34 @@ describe('installed Chrome extension — Markdown source editor', { skip: SKIP_E
     await evalJs(bootstrap, SET_STORAGE_JS, { ...FIXED_SETTINGS, preferredLocale: 'en' });
     await bootstrap.close();
 
+    // The production MAIN-world writer sees this mock; the isolated-world
+    // editor still drives the real toolbar, save state and event bridge.
+    await page.addInitScript(`(() => {
+      const state = window.__mvSourceSaveTest = { picks: 0, pending: [], writes: [], gates: [] };
+      window.__mvReleaseSourceWrite = () => {
+        const release = state.gates.shift();
+        if (release) release();
+      };
+      window.showOpenFilePicker = async () => {
+        state.picks += 1;
+        let pending = '';
+        return [{
+          name: 'doc.md', kind: 'file',
+          queryPermission: async () => 'granted',
+          requestPermission: async () => 'granted',
+          createWritable: async () => ({
+            write: async (content) => {
+              pending = content;
+              state.pending.push(content);
+              await new Promise((resolve) => state.gates.push(resolve));
+            },
+            close: async () => { state.writes.push(pending); },
+            abort: async () => undefined,
+          }),
+        }];
+      };
+    })()`);
+
     await page.goto(fileUrl, { waitUntil: 'load' });
     await waitFor(page, WAIT_STANDALONE_READY_JS);
     await waitFor(page, VIEWER_UNVEILED_JS);
@@ -128,5 +156,37 @@ describe('installed Chrome extension — Markdown source editor', { skip: SKIP_E
     await waitFor(page, `() => document.getElementById('mv-source-editor-input').value === ${JSON.stringify(EXTERNAL)}`);
     await waitFor(page, `() => document.querySelector('#markdown-content h1')?.textContent === 'Disk heading'`);
     await waitFor(page, `() => document.getElementById('save-source-btn').dataset.dirty === 'false'`);
+  });
+
+  it('writes back through MAIN world and keeps typing after a save snapshot dirty', async () => {
+    await waitFor(page, `() => document.documentElement.dataset.mvSourceFileWriter === 'ready'`);
+    const newerDraft = `${DRAFT}Typed while saving.\n`;
+    const setInput = `(content) => {
+      const input = document.getElementById('mv-source-editor-input');
+      input.value = content;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    }`;
+
+    await evalJs(page, setInput, DRAFT);
+    await evalJs(page, `() => { document.getElementById('save-source-btn').click(); return true; }`);
+    await waitFor(page, `() => window.__mvSourceSaveTest.pending.length === 1`);
+    await evalJs(page, setInput, newerDraft);
+    await evalJs(page, `() => { window.__mvReleaseSourceWrite(); return true; }`);
+    await waitFor(page, `() => document.getElementById('mv-source-editor-status').textContent === 'Earlier draft saved; latest changes unsaved'`);
+    assert.equal(await evalJs(page, `() => document.getElementById('save-source-btn').dataset.dirty`), 'true');
+
+    await evalJs(page, `() => { document.getElementById('save-source-btn').click(); return true; }`);
+    await waitFor(page, `() => window.__mvSourceSaveTest.pending.length === 2`);
+    await evalJs(page, `() => { window.__mvReleaseSourceWrite(); return true; }`);
+    await waitFor(page, `() => document.getElementById('mv-source-editor-status').textContent === 'Saved to file'`);
+
+    const result = await evalJs<{ picks: number; writes: string[] }>(page, `() => ({
+      picks: window.__mvSourceSaveTest.picks,
+      writes: window.__mvSourceSaveTest.writes,
+    })`);
+    assert.equal(result.picks, 1, 'the MAIN world reuses the authorized handle');
+    assert.deepEqual(result.writes, [DRAFT, newerDraft], 'both writes preserve the exact source');
+    assert.equal(await evalJs(page, `() => document.getElementById('save-source-btn').dataset.dirty`), 'false');
   });
 });
