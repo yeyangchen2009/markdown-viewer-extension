@@ -411,6 +411,7 @@ function generateFontAndLayoutCSS(fontScheme: FontScheme, layoutScheme: LayoutSc
   // Expose theme colors as global CSS variables for viewer chrome and custom blocks.
   if (colorScheme.background.page || colorScheme.background.surface || colorScheme.accent.link || colorScheme.accent.linkHover) {
     const vars: string[] = [];
+    vars.push(`  --md-text-color: ${colorScheme.text.primary};`);
     if (colorScheme.background.page) vars.push(`  --md-page-bg: ${colorScheme.background.page};`);
     if (colorScheme.background.surface) vars.push(`  --md-surface: ${colorScheme.background.surface};`);
     if (colorScheme.accent.link) {

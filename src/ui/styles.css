@@ -1,7 +1,9 @@
 /* Markdown Viewer Styles */
 
-/* Import KaTeX styles from node_modules */
+/* Import KaTeX and hybrid-editor styles from node_modules */
 @import '../../node_modules/katex/dist/katex.min.css';
+@import '../../node_modules/@vscode/markdown-editor/src/view/editor.css';
+@import '../../node_modules/@vscode/markdown-editor/src/view/themes/github.css';
 
 /* Import floating TOC panel styles */
 @import './toc-panel.css';
@@ -1072,8 +1074,8 @@ html[data-source-view] #markdown-page {
   visibility: hidden;
 }
 
-/* Persistent source editor: its pane is outside the renderer's scroll surface,
-   so updateContent() can repaint the preview without replacing the textarea. */
+/* The editor lives outside the renderer's DOM. Preview mode uses the hybrid
+   model/view in one column; Source mode retains the live side-by-side preview. */
 #mv-source-editor {
   display: none;
   min-width: 0;
@@ -1081,15 +1083,22 @@ html[data-source-view] #markdown-page {
   height: 100%;
   flex-direction: column;
   background: var(--color-bg-surface, #ffffff);
-  border-right: 1px solid var(--color-border);
+}
+#mv-source-editor [hidden] {
+  display: none !important;
 }
 html[data-source-editor] #viewer-main-column {
+  min-height: 0;
+}
+html[data-source-editor='source'] #viewer-main-column {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  min-height: 0;
 }
 html[data-source-editor] #mv-source-editor {
   display: flex;
+}
+html[data-source-editor='source'] #mv-source-editor {
+  border-right: 1px solid var(--color-border);
 }
 html[data-source-editor] #table-of-contents,
 html[data-source-editor] #toc-overlay,
@@ -1102,7 +1111,10 @@ html[data-source-editor] #markdown-wrapper {
   min-width: 0;
   min-height: 0;
 }
-html[data-source-editor] #markdown-page {
+html[data-source-editor='hybrid'] #markdown-wrapper {
+  display: none;
+}
+html[data-source-editor='source'] #markdown-page {
   max-width: none !important;
   min-height: 100%;
   padding: 24px;
@@ -1112,7 +1124,6 @@ html[data-source-editor] #markdown-page {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
   min-height: 36px;
   padding: 0 14px;
@@ -1121,7 +1132,29 @@ html[data-source-editor] #markdown-page {
   background: var(--color-bg-chrome, #f6f8fa);
   font-size: 12px;
 }
+.mv-source-editor-mode {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+}
+.mv-source-editor-mode button {
+  padding: 2px 9px;
+  border: 0;
+  border-radius: 4px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+.mv-source-editor-mode button[aria-pressed='true'] {
+  color: var(--color-nav-active-text);
+  background: var(--color-nav-active-bg);
+}
 #mv-source-editor-status {
+  min-width: 0;
+  margin-left: auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1168,6 +1201,75 @@ html[data-source-editor] #markdown-page {
   background: var(--color-bg-code, var(--color-bg-surface, #ffffff));
   font: 14px/1.65 Consolas, 'SFMono-Regular', 'Liberation Mono', monospace;
 }
+#mv-hybrid-editor-host {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: var(--md-page-bg, var(--color-bg-surface, #ffffff));
+}
+#mv-hybrid-editor-input {
+  box-sizing: border-box;
+  min-height: 100%;
+  padding-bottom: 24px;
+  color: var(--md-text-color, var(--color-text-primary, #1f2328));
+  background: var(--md-page-bg, var(--color-bg-surface, #ffffff));
+  font-family: var(--md-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+  font-size: var(--md-font-size, 16px);
+  --md-block-active-background: var(--color-bg-code, #f6f8fa);
+}
+:root.dark #mv-hybrid-editor-input {
+  color-scheme: dark;
+}
+#mv-source-editor .github-markdown-theme h1.md-heading,
+#mv-source-editor .github-markdown-theme h2.md-heading {
+  border-bottom-color: var(--color-border);
+}
+#mv-source-editor .github-markdown-theme h6.md-heading,
+#mv-source-editor .github-markdown-theme .md-blockquote {
+  color: var(--color-text-secondary);
+}
+#mv-source-editor .github-markdown-theme .md-blockquote {
+  border-left-color: var(--color-border);
+}
+#mv-source-editor .github-markdown-theme .md-thematic-break {
+  background-color: var(--color-border);
+}
+#mv-source-editor .github-markdown-theme a {
+  color: var(--color-theme-accent);
+}
+#mv-source-editor .github-markdown-theme :not(pre) > code,
+#mv-source-editor .github-markdown-theme .md-code-block,
+#mv-source-editor .github-markdown-theme .md-table tr:nth-child(even):not(.md-table-delimiter-row) {
+  background-color: var(--color-bg-code, #f6f8fa);
+}
+#mv-source-editor .github-markdown-theme .md-table th,
+#mv-source-editor .github-markdown-theme .md-table td {
+  border-color: var(--color-border);
+}
+.mv-hybrid-diagram {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  color: var(--color-text-secondary);
+}
+.mv-hybrid-diagram img,
+.mv-hybrid-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+.mv-hybrid-diagram * {
+  /* Keep hit testing on the custom block root. The pointer bridge maps that
+     root to its fence; nested result nodes have no source mapping. */
+  pointer-events: none;
+}
+.mv-hybrid-diagram-error {
+  color: var(--color-danger);
+  white-space: pre-wrap;
+}
 #toggle-edit-btn[aria-pressed='true'] {
   color: var(--color-theme-accent);
   background: var(--color-theme-accent-bg);
@@ -1186,10 +1288,13 @@ html[data-source-editor] #markdown-page {
   background: var(--color-theme-accent, #1f6feb);
 }
 @media (max-width: 760px) {
-  html[data-source-editor] #viewer-main-column {
+  html[data-source-editor='source'] #viewer-main-column {
     grid-template-columns: minmax(0, 1fr);
   }
-  html[data-source-editor] #markdown-wrapper {
+  html[data-source-editor='source'] #markdown-wrapper {
+    display: none;
+  }
+  .mv-source-editor-header > span:first-child {
     display: none;
   }
 }

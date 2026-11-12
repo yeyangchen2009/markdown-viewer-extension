@@ -41,7 +41,11 @@ import { createTocManager } from './ui/toc-manager';
 import { setupHeadingAnchors, type HeadingAnchorsController } from './ui/heading-anchors';
 import { createGitbookPanel } from './ui/gitbook-panel';
 import { createToolbarManager, generateToolbarHTML, layoutIcons } from './ui/toolbar';
-import { createSourceEditor, type SourceEditorController } from './ui/source-editor';
+import {
+  createSourceEditor,
+  type SourceEditorController,
+  type SourceEditorPresentation,
+} from './ui/source-editor';
 import { saveSourceFile } from './ui/source-file-writer';
 
 // Import shared utilities from viewer-host
@@ -859,6 +863,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
   let sourceEditorPreviewTimer: ReturnType<typeof setTimeout> | undefined;
   let sourceEditorPreviewRunning = false;
   let sourceEditorPreviewQueued = false;
+  let sourceEditorPreviewContent = rawContent;
   let sourceEditorDocumentRevision = 0;
 
   const hideTocForCodeView = (): void => {
@@ -1221,6 +1226,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
   if (sourceEditorHost) {
     sourceEditor = createSourceEditor({
       host: sourceEditorHost,
+      renderer: platform.renderer,
       onInput: handleSourceEditorInput,
       onSave: () => void saveSourceEditor(),
       onReloadExternal: () => void reloadExternalContent(),
@@ -1626,6 +1632,12 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
   function deactivateSourceEditor(): void {
     if (sourceEditor?.isActive()) {
       sourceEditor.setActive(false);
+      // Hybrid edits never repaint the old reading surface while typing. Restore
+      // that surface once, on exit; Source edits may already have a newer render
+      // queued, in which case its normal coalescing path handles the refresh.
+      if (sourceEditorPreviewContent !== liveRawContent) {
+        queueSourceEditorPreview(0);
+      }
     }
     updateSourceEditorState();
   }
@@ -1668,6 +1680,11 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
       sourceEditorPreviewQueued = true;
       return;
     }
+    // A debounced Source render may fire after the user returns to Preview.
+    // Do not carry the legacy split-view renderer into the hybrid session.
+    if (sourceEditor?.isActive() && sourceEditor.getPresentation() === 'hybrid') {
+      return;
+    }
     const assembler = viewerAssembler ?? await waitForAssembler();
     if (!assembler) {
       return;
@@ -1677,24 +1694,32 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     sourceEditorPreviewQueued = false;
     try {
       await assembler.updateContent(content, getCurrentScrollLine());
+      sourceEditorPreviewContent = content;
     } catch (error) {
       sourceEditorSaveStatus = 'Preview update failed';
       updateSourceEditorState();
       logThenPermissionError('sourceEditor.preview.failed', error);
     } finally {
       sourceEditorPreviewRunning = false;
-      if (sourceEditorPreviewQueued || content !== liveRawContent) {
+      const shouldFollowLatest = !sourceEditor?.isActive()
+        || sourceEditor.getPresentation() === 'source';
+      if (shouldFollowLatest && (sourceEditorPreviewQueued || content !== liveRawContent)) {
         queueSourceEditorPreview(60);
       }
     }
   }
 
-  function handleSourceEditorInput(content: string): void {
+  function handleSourceEditorInput(
+    content: string,
+    presentation: SourceEditorPresentation,
+  ): void {
     liveRawContent = content;
     sourceEditorDirty = content !== savedRawContent;
     sourceEditorSaveStatus = '';
     updateSourceEditorState();
-    queueSourceEditorPreview();
+    if (presentation === 'source') {
+      queueSourceEditorPreview();
+    }
   }
 
   function getCurrentSaveTarget(): { filename: string; mimeType: string } {
@@ -1800,6 +1825,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
       sourceEditorPreviewTimer = undefined;
     }
     sourceEditorPreviewQueued = false;
+    sourceEditorPreviewContent = content;
     liveRawContent = content;
     savedRawContent = content;
     sourceEditorDirty = false;

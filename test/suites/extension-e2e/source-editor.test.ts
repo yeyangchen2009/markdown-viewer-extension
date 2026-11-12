@@ -79,7 +79,7 @@ describe('installed Chrome extension — Markdown source editor', { skip: SKIP_E
     await waitFor(page, WAIT_STANDALONE_READY_JS);
     await waitFor(page, VIEWER_UNVEILED_JS);
     await evalJs(page, `() => { document.getElementById('toggle-edit-btn').click(); return true; }`);
-    await waitFor(page, `() => document.documentElement.dataset.sourceEditor === '1'`);
+    await waitFor(page, `() => document.documentElement.dataset.sourceEditor === 'hybrid'`);
   });
 
   after(async () => {
@@ -106,6 +106,8 @@ describe('installed Chrome extension — Markdown source editor', { skip: SKIP_E
   }
 
   it('keeps exact source bytes and updates the preview without replacing the editor', async () => {
+    await evalJs(page, `() => { document.getElementById('mv-editor-source-mode').click(); return true; }`);
+    await waitFor(page, `() => document.documentElement.dataset.sourceEditor === 'source'`);
     const initial = await evalJs<string>(page, `() => document.getElementById('mv-source-editor-input').value`);
     assert.equal(initial, ORIGINAL, 'including both trailing newlines');
 
