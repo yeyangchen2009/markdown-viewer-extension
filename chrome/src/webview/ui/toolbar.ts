@@ -65,6 +65,9 @@ export function createToolbarManager(options: ToolbarManagerOptions): ToolbarMan
     onToggleSourceMode,
     getSourceMode,
     isSourceModeActive,
+    onToggleEditMode,
+    onSaveSource,
+    isEditModeActive,
     enableRemarkMode,
     getRemarkContainer,
     getRemarkRawMarkdown,
@@ -151,7 +154,7 @@ export function createToolbarManager(options: ToolbarManagerOptions): ToolbarMan
       `;
       downloadBtn.innerHTML = progressHTML;
 
-      const markdown = rawMarkdown;
+      const markdown = getRawContent ? getRawContent() : rawMarkdown;
       const filename = getDocumentFilename();
       const exportErrorFallback = translate('docx_export_failed_default');
       const result = await docxExporter.exportToDocx(markdown, filename, (completed, total) => {
@@ -600,6 +603,15 @@ export function createToolbarManager(options: ToolbarManagerOptions): ToolbarMan
       sourceMode: Boolean(getSourceMode?.()),
     });
 
+    const editToggleBtn = document.getElementById('toggle-edit-btn');
+    if (editToggleBtn && onToggleEditMode) {
+      editToggleBtn.addEventListener('click', onToggleEditMode);
+    }
+    const saveSourceBtn = document.getElementById('save-source-btn');
+    if (saveSourceBtn && onSaveSource) {
+      saveSourceBtn.addEventListener('click', () => void onSaveSource());
+    }
+
     // Remark Mode toggle button
     const remarkToggleBtn = document.getElementById('toggle-remark-btn');
     function updateRemarkToggleUI(): void {
@@ -861,9 +873,13 @@ export function createToolbarManager(options: ToolbarManagerOptions): ToolbarMan
         return;
       }
 
-      // Ctrl/Cmd + S: Download as DOCX
-      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+      // Ctrl/Cmd + S: save edited source, download source, or export DOCX.
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
+        if (isEditModeActive?.() && onSaveSource) {
+          void onSaveSource();
+          return;
+        }
         const shouldSaveRawFile = isSourceModeActive ? isSourceModeActive() : Boolean(getSourceMode?.());
         if (shouldSaveRawFile) {
           triggerSaveFile();
@@ -954,6 +970,24 @@ export function createToolbarManager(options: ToolbarManagerOptions): ToolbarMan
     }
   }
 
+  function setEditState(state: { supported: boolean; active: boolean; dirty: boolean; saving: boolean; status?: string }): void {
+    const editBtn = document.getElementById('toggle-edit-btn') as HTMLButtonElement | null;
+    const saveBtn = document.getElementById('save-source-btn') as HTMLButtonElement | null;
+    if (editBtn) {
+      editBtn.style.display = state.supported ? '' : 'none';
+      editBtn.setAttribute('aria-pressed', String(state.active));
+      editBtn.title = state.active ? 'Close Editor' : 'Edit Markdown';
+      editBtn.setAttribute('aria-label', editBtn.title);
+    }
+    if (saveBtn) {
+      saveBtn.style.display = state.supported && state.active ? '' : 'none';
+      saveBtn.disabled = state.saving;
+      saveBtn.dataset.dirty = String(state.dirty);
+      saveBtn.title = state.status || (state.dirty ? 'Save Markdown — unsaved changes (Ctrl+S)' : 'Save Markdown (Ctrl+S)');
+      saveBtn.setAttribute('aria-label', saveBtn.title);
+    }
+  }
+
   /**
    * Show/hide the layout (width) control. Code view forces a full-bleed code
    * surface, so the reading-width presets have nothing to act on there.
@@ -975,6 +1009,7 @@ export function createToolbarManager(options: ToolbarManagerOptions): ToolbarMan
     setupKeyboardShortcuts,
     applyLocale,
     setSourceToggleState,
+    setEditState,
     setLayoutControlVisible
   };
 }
@@ -1058,6 +1093,17 @@ export function generateToolbarHTML(options: GenerateToolbarHTMLOptions): string
             <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor">
               <path d="M7 6 3 10l4 4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
               <path d="m13 6 4 4-4 4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <button id="toggle-edit-btn" class="toolbar-btn" title="Edit Markdown" aria-label="Edit Markdown" aria-pressed="false" style="display: none;">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor">
+              <path d="m13.5 3.5 3 3L7 16H4v-3L13.5 3.5Z" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <button id="save-source-btn" class="toolbar-btn" title="Save Markdown (Ctrl+S)" aria-label="Save Markdown (Ctrl+S)" style="display: none;">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor">
+              <path d="M4 3h10l3 3v11H3V3h1Z" stroke-width="2" stroke-linejoin="round"/>
+              <path d="M6 3v5h7V3M6 17v-5h8v5" stroke-width="2" stroke-linejoin="round"/>
             </svg>
           </button>
         </div>

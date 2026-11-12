@@ -1072,6 +1072,128 @@ html[data-source-view] #markdown-page {
   visibility: hidden;
 }
 
+/* Persistent source editor: its pane is outside the renderer's scroll surface,
+   so updateContent() can repaint the preview without replacing the textarea. */
+#mv-source-editor {
+  display: none;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  flex-direction: column;
+  background: var(--color-bg-surface, #ffffff);
+  border-right: 1px solid var(--color-border);
+}
+html[data-source-editor] #viewer-main-column {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  min-height: 0;
+}
+html[data-source-editor] #mv-source-editor {
+  display: flex;
+}
+html[data-source-editor] #table-of-contents,
+html[data-source-editor] #toc-overlay,
+html[data-source-editor] #remark-sidebar {
+  display: none !important;
+}
+html[data-source-editor] #markdown-wrapper {
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  min-width: 0;
+  min-height: 0;
+}
+html[data-source-editor] #markdown-page {
+  max-width: none !important;
+  min-height: 100%;
+  padding: 24px;
+  box-shadow: none;
+}
+.mv-source-editor-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 36px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-secondary, #57606a);
+  background: var(--color-bg-chrome, #f6f8fa);
+  font-size: 12px;
+}
+#mv-source-editor-status {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mv-source-editor-conflict {
+  display: none;
+  flex: 0 0 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  color: var(--color-warning-text, #6e5500);
+  background: var(--color-warning-bg, #fff8c5);
+  border-bottom: 1px solid var(--color-warning-border, #d4a72c);
+  font-size: 12px;
+}
+.mv-source-editor-conflict:not([hidden]) {
+  display: flex;
+}
+.mv-source-editor-conflict span {
+  flex: 1 1 220px;
+}
+.mv-source-editor-conflict button {
+  padding: 3px 8px;
+  color: inherit;
+  background: var(--color-bg-surface, #ffffff);
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  cursor: pointer;
+}
+#mv-source-editor-input {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+  resize: none;
+  border: 0;
+  outline: none;
+  padding: 16px;
+  overflow: auto;
+  white-space: pre;
+  tab-size: 4;
+  color: var(--color-text-primary, #1a1a1a);
+  background: var(--color-bg-code, var(--color-bg-surface, #ffffff));
+  font: 14px/1.65 Consolas, 'SFMono-Regular', 'Liberation Mono', monospace;
+}
+#toggle-edit-btn[aria-pressed='true'] {
+  color: var(--color-theme-accent);
+  background: var(--color-theme-accent-bg);
+}
+#save-source-btn {
+  position: relative;
+}
+#save-source-btn[data-dirty='true']::after {
+  content: '';
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-theme-accent, #1f6feb);
+}
+@media (max-width: 760px) {
+  html[data-source-editor] #viewer-main-column {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  html[data-source-editor] #markdown-wrapper {
+    display: none;
+  }
+}
+
 #markdown-content blockquote {
   border-left: 4px solid #dfe2e5;
   padding: 1px 13px;

@@ -41,6 +41,8 @@ import { createTocManager } from './ui/toc-manager';
 import { setupHeadingAnchors, type HeadingAnchorsController } from './ui/heading-anchors';
 import { createGitbookPanel } from './ui/gitbook-panel';
 import { createToolbarManager, generateToolbarHTML, layoutIcons } from './ui/toolbar';
+import { createSourceEditor, type SourceEditorController } from './ui/source-editor';
+import { saveSourceFile } from './ui/source-file-writer';
 
 // Import shared utilities from viewer-host
 import {
@@ -452,6 +454,10 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
         sourceMode: resolvedMode === 'source',
       });
       toolbarManager?.setLayoutControlVisible(resolvedMode === 'rendered');
+      if (resolvedMode !== 'rendered') {
+        deactivateSourceEditor();
+      }
+      updateSourceEditorState();
     } catch (error) {
       logThenPermissionError('presentation.toolbarState.failed', error, { resolvedMode });
     }
@@ -841,6 +847,19 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     return /\.(md|markdown)$/i.test(activeTarget) && !/\.slides\.md$/i.test(activeTarget);
   };
   let liveRawContent = rawContent;
+  // The editor owns an exact, unnormalised copy of the source. In particular,
+  // never recover save bytes from source-view's trailing-newline-normalised DOM.
+  let savedRawContent = rawContent;
+  let sourceEditor: SourceEditorController | null = null;
+  let sourceEditorDirty = false;
+  let sourceEditorSaving = false;
+  let sourceEditorSaveStatus = '';
+  let sourceFileHandle: FileSystemFileHandle | null = null;
+  let pendingExternalContent: string | null = null;
+  let sourceEditorPreviewTimer: ReturnType<typeof setTimeout> | undefined;
+  let sourceEditorPreviewRunning = false;
+  let sourceEditorPreviewQueued = false;
+  let sourceEditorDocumentRevision = 0;
 
   const hideTocForCodeView = (): void => {
     const tocDiv = document.getElementById('table-of-contents') as HTMLElement | null;
@@ -1030,14 +1049,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     // document: markdown keeps the markdown spelling, a code/diagram file keeps
     // its own extension (a .txt log saved as .md is a format lie). Converted
     // HTML pages are markdown content, so they save as .md.
-    getSaveTarget: () => {
-      const contentIsMarkdown = Boolean(htmlConverted)
-        || /\.(md|markdown)$/i.test(getViewerDocumentLocation());
-      return {
-        filename: toSaveFilename(getFilenameFromURL(), contentIsMarkdown),
-        mimeType: contentIsMarkdown ? 'text/markdown;charset=utf-8' : 'text/plain;charset=utf-8',
-      };
-    },
+    getSaveTarget: getCurrentSaveTarget,
     docxExporter,
     cancelScrollRestore: () => {
       // Scroll restoration is handled by markdown-viewer state.
@@ -1134,6 +1146,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
       }
     },
     onToggleSourceMode: () => {
+      deactivateSourceEditor();
       void (async () => {
         const assembler = viewerAssembler ?? await waitForAssembler();
         if (!assembler) {
@@ -1173,6 +1186,9 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     },
     getSourceMode: () => isSourceModeEnabled(),
     isSourceModeActive: () => isCodeViewActive(),
+    onToggleEditMode: () => void toggleSourceEditor(),
+    onSaveSource: saveSourceEditor,
+    isEditModeActive: () => sourceEditor?.isActive() ?? false,
     enableRemarkMode: true,
     getRemarkContainer: () => document.getElementById('markdown-content'),
     getRemarkRawMarkdown: () => liveRawContent,
@@ -1200,6 +1216,16 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
   }
   applyTocPanelSide(Boolean(initialSwapPanelSide));
   applyTocButtonVisibility();
+
+  const sourceEditorHost = document.getElementById('viewer-main-column');
+  if (sourceEditorHost) {
+    sourceEditor = createSourceEditor({
+      host: sourceEditorHost,
+      onInput: handleSourceEditorInput,
+      onReloadExternal: () => void reloadExternalContent(),
+      onDismissExternal: dismissExternalContent,
+    });
+  }
 
   // Wire the toolbar as soon as its DOM exists, i.e. *before* the document is
   // rendered. Binding used to happen inside runInitialRender(), so a click in
@@ -1575,6 +1601,214 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     requestAnimationFrame(retry);
   };
 
+  function isSourceEditorSupported(): boolean {
+    if (htmlConverted || window.parent !== window || isSlidevFile(getViewerDocumentLocation())) {
+      return false;
+    }
+    const format = getViewerSnapshot()?.document?.format;
+    return format ? format === 'markdown' : isMarkdownSourceToggleEnabled();
+  }
+
+  function updateSourceEditorState(): void {
+    const active = sourceEditor?.isActive() ?? false;
+    const status = sourceEditorSaveStatus || (sourceEditorDirty ? 'Unsaved changes' : 'All changes saved');
+    sourceEditor?.setStatus(status);
+    toolbarManager?.setEditState({
+      supported: isSourceEditorSupported(),
+      active,
+      dirty: sourceEditorDirty,
+      saving: sourceEditorSaving,
+      status,
+    });
+  }
+
+  function deactivateSourceEditor(): void {
+    if (sourceEditor?.isActive()) {
+      sourceEditor.setActive(false);
+    }
+    updateSourceEditorState();
+  }
+
+  async function toggleSourceEditor(): Promise<void> {
+    if (sourceEditor?.isActive()) {
+      deactivateSourceEditor();
+      return;
+    }
+    if (!sourceEditor || !isSourceEditorSupported()) {
+      return;
+    }
+    const assembler = viewerAssembler ?? await waitForAssembler();
+    if (!assembler) {
+      return;
+    }
+    if (getCurrentResolvedMode() !== 'rendered') {
+      await assembler.setModeIntent('rendered');
+    }
+    sourceEditor.setContent(liveRawContent);
+    sourceEditor.setActive(true);
+    sourceEditor.setExternalChangeVisible(pendingExternalContent !== null);
+    sourceEditorSaveStatus = sourceEditorDirty ? '' : 'All changes saved';
+    updateSourceEditorState();
+    sourceEditor.focus();
+  }
+
+  function queueSourceEditorPreview(delayMs = 300): void {
+    if (sourceEditorPreviewTimer !== undefined) {
+      clearTimeout(sourceEditorPreviewTimer);
+    }
+    sourceEditorPreviewTimer = setTimeout(() => {
+      sourceEditorPreviewTimer = undefined;
+      void flushSourceEditorPreview();
+    }, delayMs);
+  }
+
+  async function flushSourceEditorPreview(): Promise<void> {
+    if (sourceEditorPreviewRunning) {
+      sourceEditorPreviewQueued = true;
+      return;
+    }
+    const assembler = viewerAssembler ?? await waitForAssembler();
+    if (!assembler) {
+      return;
+    }
+    const content = liveRawContent;
+    sourceEditorPreviewRunning = true;
+    sourceEditorPreviewQueued = false;
+    try {
+      await assembler.updateContent(content, getCurrentScrollLine());
+    } catch (error) {
+      sourceEditorSaveStatus = 'Preview update failed';
+      updateSourceEditorState();
+      logThenPermissionError('sourceEditor.preview.failed', error);
+    } finally {
+      sourceEditorPreviewRunning = false;
+      if (sourceEditorPreviewQueued || content !== liveRawContent) {
+        queueSourceEditorPreview(60);
+      }
+    }
+  }
+
+  function handleSourceEditorInput(content: string): void {
+    liveRawContent = content;
+    sourceEditorDirty = content !== savedRawContent;
+    sourceEditorSaveStatus = '';
+    updateSourceEditorState();
+    queueSourceEditorPreview();
+  }
+
+  function getCurrentSaveTarget(): { filename: string; mimeType: string } {
+    const contentIsMarkdown = Boolean(htmlConverted)
+      || /\.(md|markdown)$/i.test(getViewerDocumentLocation());
+    return {
+      filename: toSaveFilename(getFilenameFromURL(), contentIsMarkdown),
+      mimeType: contentIsMarkdown ? 'text/markdown;charset=utf-8' : 'text/plain;charset=utf-8',
+    };
+  }
+
+  async function saveSourceEditor(): Promise<void> {
+    if (!sourceEditor || sourceEditorSaving) {
+      return;
+    }
+    if (pendingExternalContent !== null && sourceEditorDirty) {
+      const overwrite = window.confirm(
+        'The file changed on disk after you started editing. Overwrite that disk version with your draft?',
+      );
+      if (!overwrite) {
+        return;
+      }
+    }
+
+    const content = sourceEditor.getContent();
+    const revision = sourceEditorDocumentRevision;
+    const writeBack = getActiveDocumentUrl().startsWith('file://');
+    liveRawContent = content;
+    sourceEditorSaving = true;
+    sourceEditorSaveStatus = 'Saving…';
+    updateSourceEditorState();
+
+    try {
+      const result = await saveSourceFile({
+        ...getCurrentSaveTarget(),
+        content,
+        writeBack,
+        handle: sourceFileHandle,
+      });
+      // A navigation while the picker/write was open must not apply the old
+      // document's save baseline or file handle to the newly opened document.
+      if (revision !== sourceEditorDocumentRevision) {
+        return;
+      }
+      if (result.status === 'cancelled') {
+        sourceEditorSaveStatus = sourceEditorDirty ? 'Unsaved changes' : '';
+        return;
+      }
+
+      sourceFileHandle = result.handle;
+      savedRawContent = content;
+      sourceEditorDirty = liveRawContent !== savedRawContent;
+      pendingExternalContent = null;
+      sourceEditor.setExternalChangeVisible(false);
+      sourceEditorSaveStatus = sourceEditorDirty
+        ? 'Earlier draft saved; latest changes unsaved'
+        : result.status === 'downloaded'
+          ? 'Copy downloaded'
+          : writeBack ? 'Saved to file' : 'Copy saved';
+    } catch (error) {
+      sourceEditorSaveStatus = 'Save failed';
+      const message = error instanceof Error ? error.message : String(error);
+      window.alert(`Could not save Markdown: ${message}`);
+      logThenPermissionError('sourceEditor.save.failed', error);
+    } finally {
+      sourceEditorSaving = false;
+      updateSourceEditorState();
+    }
+  }
+
+  async function reloadExternalContent(): Promise<void> {
+    if (pendingExternalContent === null) {
+      return;
+    }
+    if (sourceEditorDirty && !window.confirm('Discard your unsaved draft and load the disk version?')) {
+      return;
+    }
+    const content = pendingExternalContent;
+    pendingExternalContent = null;
+    sourceEditorDirty = false;
+    sourceEditorSaveStatus = '';
+    sourceEditor?.setExternalChangeVisible(false);
+    await handleFileChanged(content);
+    sourceEditor?.setContent(content);
+    updateSourceEditorState();
+  }
+
+  function dismissExternalContent(): void {
+    sourceEditor?.setExternalChangeVisible(false);
+    sourceEditorSaveStatus = 'Disk version changed; saving will ask before overwriting';
+    updateSourceEditorState();
+  }
+
+  function confirmDiscardSourceEdits(): boolean {
+    return !sourceEditorDirty || window.confirm('Discard unsaved Markdown changes and open another document?');
+  }
+
+  function resetSourceEditorForDocument(content: string): void {
+    sourceEditorDocumentRevision += 1;
+    if (sourceEditorPreviewTimer !== undefined) {
+      clearTimeout(sourceEditorPreviewTimer);
+      sourceEditorPreviewTimer = undefined;
+    }
+    sourceEditorPreviewQueued = false;
+    liveRawContent = content;
+    savedRawContent = content;
+    sourceEditorDirty = false;
+    sourceEditorSaving = false;
+    sourceEditorSaveStatus = '';
+    sourceFileHandle = null;
+    pendingExternalContent = null;
+    sourceEditor?.setContent(content);
+    deactivateSourceEditor();
+  }
+
   async function executeViewerCommand<T>(
     scope: string,
     run: () => Promise<T>,
@@ -1613,6 +1847,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
   }
 
   async function renderMarkdown(content: string, savedScrollLine = 0, anchor?: string): Promise<void> {
+    resetSourceEditorForDocument(content);
     const restoreLine = typeof savedScrollLine === 'number' && Number.isFinite(savedScrollLine) && savedScrollLine > 0
       ? savedScrollLine
       : undefined;
@@ -1875,7 +2110,34 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
       throw error;
     }
 
+    if (newContent === liveRawContent) {
+      if (!sourceEditorDirty) {
+        savedRawContent = newContent;
+      }
+      updateSourceEditorState();
+      return;
+    }
+    // A tracker echo for the snapshot we just wrote is not an external edit.
+    // This also matters when the user kept typing while the write was open.
+    if (newContent === savedRawContent) {
+      return;
+    }
+    if (sourceEditorDirty) {
+      pendingExternalContent = newContent;
+      sourceEditorSaveStatus = 'Disk version changed — draft preserved';
+      sourceEditor?.setExternalChangeVisible(true);
+      updateSourceEditorState();
+      return;
+    }
+
     liveRawContent = newContent;
+    savedRawContent = newContent;
+    sourceEditorDirty = false;
+    sourceEditorSaveStatus = '';
+    pendingExternalContent = null;
+    sourceEditor?.setContent(newContent);
+    sourceEditor?.setExternalChangeVisible(false);
+    updateSourceEditorState();
 
     if (!viewerAssembler) {
       throw new Error('[Viewer] viewer assembler not initialized');
@@ -2012,7 +2274,11 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     }
   }
 
-  window.addEventListener('beforeunload', () => {
+  window.addEventListener('beforeunload', (event) => {
+    if (sourceEditorDirty) {
+      event.preventDefault();
+      event.returnValue = '';
+    }
     currentViewerMainRuntime = null;
     mountedViewerRoot = null;
     markdownViewerAdapter?.destroy();
@@ -2077,6 +2343,9 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     }
 
     event.preventDefault();
+    if (!confirmDiscardSourceEdits()) {
+      return;
+    }
     const hashIndex = targetUrl.indexOf('#');
     const anchorId = hashIndex >= 0 ? decodeURIComponent(targetUrl.slice(hashIndex + 1)) : undefined;
 
