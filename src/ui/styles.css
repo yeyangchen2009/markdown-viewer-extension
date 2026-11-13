@@ -1074,15 +1074,15 @@ html[data-source-view] #markdown-page {
   visibility: hidden;
 }
 
-/* The editor lives outside the renderer's DOM. Preview mode uses the hybrid
-   model/view in one column; Source mode retains the live side-by-side preview. */
+/* The single Preview editor lives outside the renderer's DOM so restoring the
+   reading surface cannot destroy its model, focus or scroll position. */
 #mv-source-editor {
   display: none;
   min-width: 0;
   min-height: 0;
   height: 100%;
   flex-direction: column;
-  background: var(--color-bg-surface, #ffffff);
+  background: var(--md-page-bg, var(--color-bg-surface, #ffffff));
 }
 #mv-source-editor [hidden] {
   display: none !important;
@@ -1090,15 +1090,8 @@ html[data-source-view] #markdown-page {
 html[data-source-editor] #viewer-main-column {
   min-height: 0;
 }
-html[data-source-editor='source'] #viewer-main-column {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-}
 html[data-source-editor] #mv-source-editor {
   display: flex;
-}
-html[data-source-editor='source'] #mv-source-editor {
-  border-right: 1px solid var(--color-border);
 }
 html[data-source-editor] #table-of-contents,
 html[data-source-editor] #toc-overlay,
@@ -1114,12 +1107,6 @@ html[data-source-editor] #markdown-wrapper {
 html[data-source-editor='hybrid'] #markdown-wrapper {
   display: none;
 }
-html[data-source-editor='source'] #markdown-page {
-  max-width: none !important;
-  min-height: 100%;
-  padding: 24px;
-  box-shadow: none;
-}
 .mv-source-editor-header {
   display: flex;
   flex: 0 0 auto;
@@ -1131,26 +1118,6 @@ html[data-source-editor='source'] #markdown-page {
   color: var(--color-text-secondary, #57606a);
   background: var(--color-bg-chrome, #f6f8fa);
   font-size: 12px;
-}
-.mv-source-editor-mode {
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-}
-.mv-source-editor-mode button {
-  padding: 2px 9px;
-  border: 0;
-  border-radius: 4px;
-  color: inherit;
-  background: transparent;
-  font: inherit;
-  cursor: pointer;
-}
-.mv-source-editor-mode button[aria-pressed='true'] {
-  color: var(--color-nav-active-text);
-  background: var(--color-nav-active-bg);
 }
 #mv-source-editor-status {
   min-width: 0;
@@ -1185,22 +1152,6 @@ html[data-source-editor='source'] #markdown-page {
   border-radius: 4px;
   cursor: pointer;
 }
-#mv-source-editor-input {
-  flex: 1 1 auto;
-  width: 100%;
-  min-height: 0;
-  box-sizing: border-box;
-  resize: none;
-  border: 0;
-  outline: none;
-  padding: 16px;
-  overflow: auto;
-  white-space: pre;
-  tab-size: 4;
-  color: var(--color-text-primary, #1a1a1a);
-  background: var(--color-bg-code, var(--color-bg-surface, #ffffff));
-  font: 14px/1.65 Consolas, 'SFMono-Regular', 'Liberation Mono', monospace;
-}
 #mv-hybrid-editor-host {
   flex: 1 1 auto;
   min-width: 0;
@@ -1217,7 +1168,9 @@ html[data-source-editor='source'] #markdown-page {
   background: var(--md-page-bg, var(--color-bg-surface, #ffffff));
   font-family: var(--md-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
   font-size: var(--md-font-size, 16px);
-  --md-block-active-background: var(--color-bg-code, #f6f8fa);
+  --md-block-active-background: var(--md-accent-bg, var(--md-code-bg, var(--md-surface, #f6f8fa)));
+  --md-iframe-background: var(--md-surface, var(--md-page-bg, #ffffff));
+  --md-cursor-background: var(--md-text-color, var(--color-text-primary, #1f2328));
 }
 :root.dark #mv-hybrid-editor-input {
   color-scheme: dark;
@@ -1242,7 +1195,7 @@ html[data-source-editor='source'] #markdown-page {
 #mv-source-editor .github-markdown-theme :not(pre) > code,
 #mv-source-editor .github-markdown-theme .md-code-block,
 #mv-source-editor .github-markdown-theme .md-table tr:nth-child(even):not(.md-table-delimiter-row) {
-  background-color: var(--color-bg-code, #f6f8fa);
+  background-color: var(--md-code-bg, var(--md-surface, #f6f8fa));
 }
 #mv-source-editor .github-markdown-theme .md-table th,
 #mv-source-editor .github-markdown-theme .md-table td {
@@ -1288,12 +1241,6 @@ html[data-source-editor='source'] #markdown-page {
   background: var(--color-theme-accent, #1f6feb);
 }
 @media (max-width: 760px) {
-  html[data-source-editor='source'] #viewer-main-column {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  html[data-source-editor='source'] #markdown-wrapper {
-    display: none;
-  }
   .mv-source-editor-header > span:first-child {
     display: none;
   }

@@ -414,6 +414,7 @@ function generateFontAndLayoutCSS(fontScheme: FontScheme, layoutScheme: LayoutSc
     vars.push(`  --md-text-color: ${colorScheme.text.primary};`);
     if (colorScheme.background.page) vars.push(`  --md-page-bg: ${colorScheme.background.page};`);
     if (colorScheme.background.surface) vars.push(`  --md-surface: ${colorScheme.background.surface};`);
+    if (colorScheme.background.code) vars.push(`  --md-code-bg: ${colorScheme.background.code};`);
     if (colorScheme.accent.link) {
       const accentBase = colorScheme.accent.link;
       const accentSurface = colorScheme.background.surface || colorScheme.background.page || 'transparent';

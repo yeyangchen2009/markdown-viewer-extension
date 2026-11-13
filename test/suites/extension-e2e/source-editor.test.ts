@@ -105,42 +105,48 @@ describe('installed Chrome extension — Markdown source editor', { skip: SKIP_E
     }, { url: fileUrl, text: content });
   }
 
-  it('keeps exact source bytes and updates the preview without replacing the editor', async () => {
-    await evalJs(page, `() => { document.getElementById('mv-editor-source-mode').click(); return true; }`);
-    await waitFor(page, `() => document.documentElement.dataset.sourceEditor === 'source'`);
-    const initial = await evalJs<string>(page, `() => document.getElementById('mv-source-editor-input').value`);
-    assert.equal(initial, ORIGINAL, 'including both trailing newlines');
+  async function setPreviewContent(content: string, readyText: string): Promise<void> {
+    await page.locator('#mv-hybrid-editor-input .md-block').first().click();
+    await page.keyboard.press('Control+a');
+    await page.keyboard.insertText(content);
+    await waitFor(page, `() => document.getElementById(
+      'mv-hybrid-editor-input',
+    )?.textContent.includes(${JSON.stringify(readyText)}) === true`);
+  }
 
-    await evalJs(page, `(content) => {
-      const input = document.getElementById('mv-source-editor-input');
-      input.value = content;
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      input.focus();
-      input.setSelectionRange(4, 4);
+  it('edits only in Preview without replacing the editor or repainting the reading DOM', async () => {
+    assert.equal(await page.locator('#mv-editor-preview-mode').count(), 0);
+    assert.equal(await page.locator('#mv-editor-source-mode').count(), 0);
+    assert.equal(await page.locator('#mv-source-editor-input').count(), 0);
+    await evalJs(page, `() => {
+      window.__mvPreviewEditorNode = document.getElementById('mv-hybrid-editor-input');
       return true;
-    }`, DRAFT);
-    await waitFor(page, `() => document.querySelector('#markdown-content h1')?.textContent === 'Draft heading'`);
+    }`);
+    await setPreviewContent(DRAFT, 'Draft heading');
+    await waitFor(page, `() => document.querySelector(
+      '#mv-hybrid-editor-input .md-heading',
+    )?.textContent.includes('Draft heading') === true`);
     await waitFor(page, `() => document.getElementById('save-source-btn').dataset.dirty === 'true'`);
 
-    const state = await evalJs<{ value: string; caret: number; split: boolean }>(page, `() => {
-      const input = document.getElementById('mv-source-editor-input');
-      return {
-        value: input.value,
-        caret: input.selectionStart,
-        split: getComputedStyle(document.getElementById('viewer-main-column')).gridTemplateColumns.split(' ').length === 2,
-      };
-    }`);
-    assert.equal(state.value, DRAFT);
-    assert.equal(state.caret, 4, 'preview render preserves the caret');
-    assert.equal(state.split, true, 'editor and preview are both visible on desktop');
+    assert.equal(await page.locator('#markdown-content h1').textContent(), 'Original');
+    assert.equal(
+      await page.locator('#markdown-wrapper').evaluate((element) => getComputedStyle(element).display),
+      'none',
+      'only the Preview editor is visible',
+    );
+    assert.equal(
+      await evalJs<boolean>(page, `() => window.__mvPreviewEditorNode === document.getElementById('mv-hybrid-editor-input')`),
+      true,
+      'Preview input does not replace the editor DOM',
+    );
   });
 
   it('preserves a dirty draft on external changes and loads disk only on confirmation', async () => {
     await sendExternalContent(EXTERNAL);
     await waitFor(page, `() => !document.getElementById('mv-source-editor-conflict').hidden`);
-    assert.equal(
-      await evalJs<string>(page, `() => document.getElementById('mv-source-editor-input').value`),
-      DRAFT,
+    assert.match(
+      await page.locator('#mv-hybrid-editor-input .md-heading').first().textContent(),
+      /Draft heading/,
       'external content never silently replaces the draft',
     );
 
@@ -159,26 +165,22 @@ describe('installed Chrome extension — Markdown source editor', { skip: SKIP_E
         .find((button) => button.textContent === 'Load disk version').click();
       return true;
     }`);
-    await waitFor(page, `() => document.getElementById('mv-source-editor-input').value === ${JSON.stringify(EXTERNAL)}`);
-    await waitFor(page, `() => document.querySelector('#markdown-content h1')?.textContent === 'Disk heading'`);
+    await waitFor(page, `() => document.querySelector(
+      '#mv-hybrid-editor-input .md-heading',
+    )?.textContent.includes('Disk heading') === true`);
     await waitFor(page, `() => document.getElementById('save-source-btn').dataset.dirty === 'false'`);
   });
 
   it('writes back through MAIN world and keeps typing after a save snapshot dirty', async () => {
     await waitFor(page, `() => document.documentElement.dataset.mvSourceFileWriter === 'ready'`);
     const newerDraft = `${DRAFT}Typed while saving.\n`;
-    const setInput = `(content) => {
-      const input = document.getElementById('mv-source-editor-input');
-      input.value = content;
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      input.focus();
-      return true;
-    }`;
 
-    await evalJs(page, setInput, DRAFT);
+    await setPreviewContent(DRAFT, 'Draft heading');
     await page.keyboard.press('Control+s');
     await waitFor(page, `() => window.__mvSourceSaveTest.pending.length === 1`);
-    await evalJs(page, setInput, newerDraft);
+    await page.locator('#mv-hybrid-editor-input .md-block').last().click();
+    await page.keyboard.press('Control+End');
+    await page.keyboard.insertText('Typed while saving.\n');
     await evalJs(page, `() => { window.__mvReleaseSourceWrite(); return true; }`);
     await waitFor(page, `() => document.getElementById('mv-source-editor-status').textContent === 'Earlier draft saved; latest changes unsaved'`);
     assert.equal(await evalJs(page, `() => document.getElementById('save-source-btn').dataset.dirty`), 'true');

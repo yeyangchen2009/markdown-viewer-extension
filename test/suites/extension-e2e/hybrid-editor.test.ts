@@ -86,28 +86,23 @@ describe('installed Chromium extension — hybrid Markdown editor', { skip: SKIP
     if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true });
   });
 
-  async function showSource(): Promise<void> {
-    await page.locator('#mv-editor-source-mode').click();
-    await waitFor(page, `() => document.documentElement.dataset.sourceEditor === 'source'`);
+  async function setPreviewContent(content: string, readyText: string): Promise<void> {
+    await page.locator('#mv-hybrid-editor-input .md-block').first().click();
+    await page.keyboard.press('Control+a');
+    await page.keyboard.insertText(content);
+    await waitFor(page, `() => document.getElementById(
+      'mv-hybrid-editor-input',
+    )?.textContent.includes(${JSON.stringify(readyText)}) === true`);
   }
 
-  async function showHybrid(): Promise<void> {
-    await page.locator('#mv-editor-preview-mode').click();
-    await waitFor(page, `() => document.documentElement.dataset.sourceEditor === 'hybrid'`);
-  }
-
-  async function readSource(): Promise<string> {
-    return evalJs<string>(page, `() => document.getElementById('mv-source-editor-input').value`);
-  }
-
-  async function setSource(content: string): Promise<void> {
-    await showSource();
-    await evalJs(page, `(value) => {
-      const input = document.getElementById('mv-source-editor-input');
-      input.value = value;
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      return true;
-    }`, content);
+  async function savePreview(): Promise<string> {
+    const previousCount = await evalJs<number>(page, `() => window.__mvHybridSaveTest.pending.length`);
+    await page.keyboard.press('Control+s');
+    await waitFor(page, `() => window.__mvHybridSaveTest.pending.length === ${previousCount + 1}`);
+    const content = await evalJs<string>(page, `() => window.__mvHybridSaveTest.pending.at(-1)`);
+    await evalJs(page, `() => { window.__mvReleaseHybridWrite(); return true; }`);
+    await waitFor(page, `() => document.getElementById('mv-source-editor-status').textContent === 'Saved to file'`);
+    return content;
   }
 
   async function sendExternalContent(content: string): Promise<void> {
@@ -124,19 +119,24 @@ describe('installed Chromium extension — hybrid Markdown editor', { skip: SKIP
     }, { url: fileUrl, text: content });
   }
 
-  it('edits a rendered heading with real keyboard input and supports undo/redo', async () => {
-    assert.equal(await readSource(), ORIGINAL, 'initial autorun must not erase the source');
+  it('uses only Preview and edits a rendered heading with undo/redo', async () => {
+    assert.equal(await savePreview(), ORIGINAL, 'initial autorun must not erase the source');
+    assert.equal(await page.locator('#mv-editor-preview-mode').count(), 0);
+    assert.equal(await page.locator('#mv-editor-source-mode').count(), 0);
+    assert.equal(await page.locator('#mv-source-editor-input').count(), 0);
+    assert.equal(await page.locator('#toggle-source-view-btn').count(), 1, 'the independent readonly source view remains');
     assert.equal(
       await page.locator('#markdown-wrapper').evaluate((element) => getComputedStyle(element).display),
       'none',
-      'hybrid mode uses one editor column instead of the legacy preview',
+      'Preview uses one editor column',
     );
 
     await page.locator('#mv-hybrid-editor-input .md-heading').first().click();
     await page.keyboard.press('End');
     await page.keyboard.type(' edited');
-    const edited = ORIGINAL.replace('# Original', '# Original edited');
-    await waitFor(page, `() => document.getElementById('mv-source-editor-input').value === ${JSON.stringify(edited)}`);
+    await waitFor(page, `() => document.querySelector(
+      '#mv-hybrid-editor-input .md-heading',
+    )?.textContent.includes('Original edited') === true`);
     await waitFor(page, `() => document.getElementById('save-source-btn').dataset.dirty === 'true'`);
     assert.equal(
       await page.locator('#markdown-content h1').textContent(),
@@ -147,32 +147,18 @@ describe('installed Chromium extension — hybrid Markdown editor', { skip: SKIP
     for (let index = 0; index < ' edited'.length; index += 1) {
       await page.keyboard.press('Control+z');
     }
-    await waitFor(page, `() => document.getElementById('mv-source-editor-input').value === ${JSON.stringify(ORIGINAL)}`);
+    await waitFor(page, `() => document.querySelector(
+      '#mv-hybrid-editor-input .md-heading',
+    )?.textContent.includes('Original edited') === false`);
     for (let index = 0; index < ' edited'.length; index += 1) {
       await page.keyboard.press('Control+y');
     }
-    await waitFor(page, `() => document.getElementById('mv-source-editor-input').value === ${JSON.stringify(edited)}`);
-
-    await showSource();
-    assert.equal(await readSource(), edited, 'Preview/Source share exact source text');
-    const sourcePending = edited.replace('Body text.', 'Source **pending**.');
-    await evalJs(page, `(value) => {
-      const input = document.getElementById('mv-source-editor-input');
-      input.value = value;
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      return true;
-    }`, sourcePending);
-    await showHybrid();
-    assert.equal(await readSource(), sourcePending, 'returning to Preview preserves the edit');
-    await page.waitForTimeout(450);
-    assert.equal(
-      await page.locator('#markdown-content h1').textContent(),
-      'Original',
-      'a debounced Source render does not follow the user into Preview',
-    );
+    await waitFor(page, `() => document.querySelector(
+      '#mv-hybrid-editor-input .md-heading',
+    )?.textContent.includes('Original edited') === true`);
   });
 
-  it('preserves CRLF and trailing newlines across Preview/Source round trips', async () => {
+  it('preserves CRLF and trailing newlines through real Preview edits and saves', async () => {
     const content = '# CRLF\r\n\r\nLine one.\r\n\r\n';
     await evalJs(page, `() => {
       const state = window.__mvHybridSaveTest;
@@ -190,43 +176,31 @@ describe('installed Chromium extension — hybrid Markdown editor', { skip: SKIP
       return true;
     }`);
     await waitFor(page, `() => document.getElementById('save-source-btn').dataset.dirty === 'false'`);
-    await showHybrid();
-    await page.keyboard.press('Control+s');
-    await waitFor(page, `() => window.__mvHybridSaveTest.pending.length === 1`);
+    await waitFor(page, `() => document.querySelector(
+      '#mv-hybrid-editor-input .md-heading',
+    )?.textContent.includes('CRLF') === true`);
+    await page.locator('#mv-hybrid-editor-input .md-heading').first().click();
+    await page.keyboard.press('End');
+    await page.keyboard.type(' edited');
+    const edited = content.replace('# CRLF', '# CRLF edited');
     assert.equal(
-      await evalJs<string>(page, `() => window.__mvHybridSaveTest.pending[0]`),
-      content,
-      'the hybrid model retains CRLF even though the textarea mirror uses LF',
+      await savePreview(),
+      edited,
+      'Preview saves its canonical text without a textarea newline round trip',
     );
-    await evalJs(page, `() => { window.__mvReleaseHybridWrite(); return true; }`);
-    await waitFor(page, `() => document.getElementById('mv-source-editor-status').textContent === 'Saved to file'`);
 
-    await showSource();
-    await page.keyboard.press('Control+s');
-    await waitFor(page, `() => window.__mvHybridSaveTest.pending.length === 2`);
-    assert.equal(
-      await evalJs<string>(page, `() => window.__mvHybridSaveTest.pending[1]`),
-      content,
-      'Source mode also saves its canonical text without a DOM newline round trip',
-    );
-    await evalJs(page, `() => { window.__mvReleaseHybridWrite(); return true; }`);
-    await waitFor(page, `() => document.getElementById('mv-source-editor-status').textContent === 'Saved to file'`);
     await sendExternalContent(ORIGINAL);
-    await waitFor(page, `() => document.getElementById('mv-source-editor-input').value === ${JSON.stringify(ORIGINAL)}`);
-    await showHybrid();
+    await waitFor(page, `() => document.querySelector(
+      '#mv-hybrid-editor-input .md-heading',
+    )?.textContent.includes('Original') === true`);
   });
 
   it('toggles a rendered task checkbox by editing Markdown source', async () => {
-    await setSource('- [ ] Task\n');
-    await showHybrid();
+    await setPreviewContent('- [ ] Task\n\nAfter task.\n', 'After task.');
+    await page.locator('#mv-hybrid-editor-input .md-paragraph').filter({ hasText: 'After task.' }).click();
     const checkbox = page.locator('#mv-hybrid-editor-input input[type="checkbox"]').first();
     await checkbox.click();
-    await waitFor(page, `() => {
-      const value = document.getElementById('mv-source-editor-input').value;
-      return value === ${JSON.stringify('- [x] Task\n')}
-        || value === ${JSON.stringify('- [X] Task\n')};
-    }`);
-    assert.match(await readSource(), /^- \[[xX]\] Task\n$/);
+    assert.match(await savePreview(), /^- \[[xX]\] Task\n\nAfter task\.\n$/);
   });
 
   it('renders Mermaid blocks in place and reveals the clicked original fence', async () => {
@@ -234,8 +208,7 @@ describe('installed Chromium extension — hybrid Markdown editor', { skip: SKIP
       + '```mermaid\nflowchart TD\n  A["Start"] --> B["First"]\n```\n\n'
       + 'Between diagrams.\n\n'
       + '```mermaid\nflowchart LR\n  C["Start"] --> D["Second"]\n```\n';
-    await setSource(content);
-    await showHybrid();
+    await setPreviewContent(content, 'Diagram');
     await waitFor(page, `() => document.querySelectorAll('#mv-hybrid-editor-input .mv-hybrid-diagram img').length === 2`, 30000);
 
     await page.locator('#mv-hybrid-editor-input .mv-hybrid-diagram').first().click();
@@ -246,15 +219,14 @@ describe('installed Chromium extension — hybrid Markdown editor', { skip: SKIP
     await waitFor(page, `() => document.querySelector(
       '#mv-hybrid-editor-input .md-code-block.md-block-active',
     )?.textContent.includes('Second') === true`);
-    assert.equal(await readSource(), content, 'rendering never round-trips either fence through HTML');
+    assert.equal(await savePreview(), content, 'rendering never round-trips either fence through HTML');
   });
 
   it('keeps a hybrid draft on external changes and loads disk only on confirmation', async () => {
-    await setSource(DRAFT);
-    await showHybrid();
+    await setPreviewContent(DRAFT, 'Draft heading');
     await sendExternalContent(EXTERNAL);
     await waitFor(page, `() => !document.getElementById('mv-source-editor-conflict').hidden`);
-    assert.equal(await readSource(), DRAFT);
+    assert.match(await page.locator('#mv-hybrid-editor-input .md-heading').first().textContent(), /Draft heading/);
 
     await sendExternalContent(EXTERNAL);
     page.once('dialog', (dialog) => dialog.accept());
@@ -263,7 +235,9 @@ describe('installed Chromium extension — hybrid Markdown editor', { skip: SKIP
         .find((button) => button.textContent === 'Load disk version').click();
       return true;
     }`);
-    await waitFor(page, `() => document.getElementById('mv-source-editor-input').value === ${JSON.stringify(EXTERNAL)}`);
+    await waitFor(page, `() => document.querySelector(
+      '#mv-hybrid-editor-input .md-heading',
+    )?.textContent.includes('Disk heading') === true`);
     await waitFor(page, `() => document.getElementById('save-source-btn').dataset.dirty === 'false'`);
   });
 
@@ -275,17 +249,18 @@ describe('installed Chromium extension — hybrid Markdown editor', { skip: SKIP
       state.gates = [];
       return true;
     }`);
-    await setSource(DRAFT);
-    await showHybrid();
+    await setPreviewContent(DRAFT, 'Draft heading');
     await waitFor(page, `() => document.documentElement.dataset.mvSourceFileWriter === 'ready'`);
     await page.locator('#save-source-btn').click();
     await waitFor(page, `() => window.__mvHybridSaveTest.pending.length === 1`);
 
-    await page.locator('#mv-hybrid-editor-input .md-heading').first().click();
-    await page.keyboard.press('End');
-    await page.keyboard.type(' newer');
-    const newerDraft = DRAFT.replace('# Draft heading', '# Draft heading newer');
-    await waitFor(page, `() => document.getElementById('mv-source-editor-input').value === ${JSON.stringify(newerDraft)}`);
+    await page.locator('#mv-hybrid-editor-input .md-block').last().click();
+    await page.keyboard.press('Control+End');
+    await page.keyboard.insertText('Typed while saving.\n');
+    const newerDraft = `${DRAFT}Typed while saving.\n`;
+    await waitFor(page, `() => document.getElementById(
+      'mv-hybrid-editor-input',
+    )?.textContent.includes('Typed while saving.') === true`);
     await evalJs(page, `() => { window.__mvReleaseHybridWrite(); return true; }`);
     await waitFor(page, `() => document.getElementById('mv-source-editor-status').textContent === 'Earlier draft saved; latest changes unsaved'`);
 
@@ -302,8 +277,7 @@ describe('installed Chromium extension — hybrid Markdown editor', { skip: SKIP
   });
 
   it('restores the complete reading preview with the latest hybrid source on exit', async () => {
-    await setSource('# Exit preview\n\nLatest **hybrid** text.\n');
-    await showHybrid();
+    await setPreviewContent('# Exit preview\n\nLatest **hybrid** text.\n', 'Exit preview');
     await page.locator('#toggle-edit-btn').click();
     await waitFor(page, `() => !document.documentElement.dataset.sourceEditor`);
     await waitFor(page, `() => document.querySelector('#markdown-content h1')?.textContent === 'Exit preview'`);

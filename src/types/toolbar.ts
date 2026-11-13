@@ -65,6 +65,8 @@ export interface ToolbarManagerOptions {
   getSourceMode?: () => boolean;
   /** Whether current view should save raw file on Ctrl/Cmd+S */
   isSourceModeActive?: () => boolean;
+  /** Keep the rendered editor's content width aligned with the reading layout. */
+  onLayoutChange?: (maxWidth: string) => void;
   /** Toggle the persistent Markdown source editor */
   onToggleEditMode?: () => void;
   /** Save the edited source through an authorized file handle or a copy */

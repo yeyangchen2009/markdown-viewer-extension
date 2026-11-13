@@ -44,7 +44,6 @@ import { createToolbarManager, generateToolbarHTML, layoutIcons } from './ui/too
 import {
   createSourceEditor,
   type SourceEditorController,
-  type SourceEditorPresentation,
 } from './ui/source-editor';
 import { saveSourceFile } from './ui/source-file-writer';
 
@@ -861,10 +860,12 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
   let sourceFileHandle: FileSystemFileHandle | null = null;
   let pendingExternalContent: string | null = null;
   let sourceEditorPreviewTimer: ReturnType<typeof setTimeout> | undefined;
+  let sourceEditorPreviewRequestedLine: number | undefined;
   let sourceEditorPreviewRunning = false;
   let sourceEditorPreviewQueued = false;
   let sourceEditorPreviewContent = rawContent;
   let sourceEditorDocumentRevision = 0;
+  let previewScrollRestoreVersion = 0;
 
   const hideTocForCodeView = (): void => {
     const tocDiv = document.getElementById('table-of-contents') as HTMLElement | null;
@@ -1191,7 +1192,12 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     },
     getSourceMode: () => isSourceModeEnabled(),
     isSourceModeActive: () => isCodeViewActive(),
-    onToggleEditMode: () => void toggleSourceEditor(),
+    onLayoutChange: (maxWidth) => sourceEditor?.setLayoutWidth(maxWidth),
+    onToggleEditMode: () => {
+      void toggleSourceEditor().catch((error) => {
+        logThenPermissionError('sourceEditor.toggle.failed', error);
+      });
+    },
     onSaveSource: saveSourceEditor,
     isEditModeActive: () => sourceEditor?.isActive() ?? false,
     enableRemarkMode: true,
@@ -1575,10 +1581,13 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     }
 
     let attemptsRemaining = 6;
+    let hasRestored = false;
+    const restoreVersion = ++previewScrollRestoreVersion;
     const retry = (): void => {
+      if (restoreVersion !== previewScrollRestoreVersion) return;
       const currentLine = markdownViewerAdapter?.captureCurrentLine() ?? null;
 
-      if (currentLine !== null && Math.abs(currentLine - line) < 1) {
+      if (hasRestored && currentLine !== null && Math.abs(currentLine - line) < 1) {
         logViewerDebug('preview.restore.done', {
           requestedLine: line,
           currentLine,
@@ -1587,6 +1596,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
       }
 
       markdownViewerAdapter?.restorePreviewScroll(line);
+      hasRestored = true;
 
       if (attemptsRemaining <= 0) {
         logViewerDebug('preview.restore.abort', {
@@ -1631,12 +1641,16 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
 
   function deactivateSourceEditor(): void {
     if (sourceEditor?.isActive()) {
+      const exitLine = sourceEditor.captureCurrentLine() ?? getCurrentScrollLine();
+      if (Number.isFinite(exitLine)) lastScrollLine = exitLine;
+      previewScrollRestoreVersion += 1;
       sourceEditor.setActive(false);
-      // Hybrid edits never repaint the old reading surface while typing. Restore
-      // that surface once, on exit; Source edits may already have a newer render
-      // queued, in which case its normal coalescing path handles the refresh.
+      // Preview edits never repaint the old reading surface while typing.
+      // Restore that surface once, on exit, and preserve the captured line.
       if (sourceEditorPreviewContent !== liveRawContent) {
-        queueSourceEditorPreview(0);
+        queueSourceEditorPreview(0, exitLine);
+      } else {
+        restorePreviewScrollAfterRender(exitLine);
       }
     }
     updateSourceEditorState();
@@ -1650,6 +1664,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     if (!sourceEditor || !isSourceEditorSupported()) {
       return;
     }
+    const readingLine = getCurrentScrollLine();
     const assembler = viewerAssembler ?? await waitForAssembler();
     if (!assembler) {
       return;
@@ -1657,32 +1672,44 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     if (getCurrentResolvedMode() !== 'rendered') {
       await assembler.setModeIntent('rendered');
     }
+    previewScrollRestoreVersion += 1;
+    const page = document.getElementById('markdown-page');
+    if (page) sourceEditor.setLayoutWidth(page.style.maxWidth || getComputedStyle(page).maxWidth);
     sourceEditor.setContent(liveRawContent);
     sourceEditor.setActive(true);
+    sourceEditor.revealSourceLine(readingLine);
     sourceEditor.setExternalChangeVisible(pendingExternalContent !== null);
     sourceEditorSaveStatus = sourceEditorDirty ? '' : 'All changes saved';
     updateSourceEditorState();
     sourceEditor.focus();
   }
 
-  function queueSourceEditorPreview(delayMs = 300): void {
+  function queueSourceEditorPreview(delayMs = 300, targetLine?: number): void {
+    if (targetLine !== undefined && Number.isFinite(targetLine)) {
+      sourceEditorPreviewRequestedLine = targetLine;
+    }
     if (sourceEditorPreviewTimer !== undefined) {
       clearTimeout(sourceEditorPreviewTimer);
     }
     sourceEditorPreviewTimer = setTimeout(() => {
       sourceEditorPreviewTimer = undefined;
-      void flushSourceEditorPreview();
+      const requestedLine = sourceEditorPreviewRequestedLine;
+      sourceEditorPreviewRequestedLine = undefined;
+      void flushSourceEditorPreview(requestedLine);
     }, delayMs);
   }
 
-  async function flushSourceEditorPreview(): Promise<void> {
+  async function flushSourceEditorPreview(targetLine?: number): Promise<void> {
     if (sourceEditorPreviewRunning) {
       sourceEditorPreviewQueued = true;
+      if (targetLine !== undefined && Number.isFinite(targetLine)) {
+        sourceEditorPreviewRequestedLine = targetLine;
+      }
       return;
     }
-    // A debounced Source render may fire after the user returns to Preview.
-    // Do not carry the legacy split-view renderer into the hybrid session.
-    if (sourceEditor?.isActive() && sourceEditor.getPresentation() === 'hybrid') {
+    // An exit render may finish after the user has already re-entered Preview.
+    // Never replace the reading surface during the new editing session.
+    if (sourceEditor?.isActive()) {
       return;
     }
     const assembler = viewerAssembler ?? await waitForAssembler();
@@ -1690,10 +1717,11 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
       return;
     }
     const content = liveRawContent;
+    const restoreLine = targetLine ?? getCurrentScrollLine();
     sourceEditorPreviewRunning = true;
     sourceEditorPreviewQueued = false;
     try {
-      await assembler.updateContent(content, getCurrentScrollLine());
+      await assembler.updateContent(content, restoreLine);
       sourceEditorPreviewContent = content;
     } catch (error) {
       sourceEditorSaveStatus = 'Preview update failed';
@@ -1701,25 +1729,18 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
       logThenPermissionError('sourceEditor.preview.failed', error);
     } finally {
       sourceEditorPreviewRunning = false;
-      const shouldFollowLatest = !sourceEditor?.isActive()
-        || sourceEditor.getPresentation() === 'source';
+      const shouldFollowLatest = !sourceEditor?.isActive();
       if (shouldFollowLatest && (sourceEditorPreviewQueued || content !== liveRawContent)) {
-        queueSourceEditorPreview(60);
+        queueSourceEditorPreview(60, restoreLine);
       }
     }
   }
 
-  function handleSourceEditorInput(
-    content: string,
-    presentation: SourceEditorPresentation,
-  ): void {
+  function handleSourceEditorInput(content: string): void {
     liveRawContent = content;
     sourceEditorDirty = content !== savedRawContent;
     sourceEditorSaveStatus = '';
     updateSourceEditorState();
-    if (presentation === 'source') {
-      queueSourceEditorPreview();
-    }
   }
 
   function getCurrentSaveTarget(): { filename: string; mimeType: string } {
@@ -1825,6 +1846,8 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
       sourceEditorPreviewTimer = undefined;
     }
     sourceEditorPreviewQueued = false;
+    sourceEditorPreviewRequestedLine = undefined;
+    previewScrollRestoreVersion += 1;
     sourceEditorPreviewContent = content;
     liveRawContent = content;
     savedRawContent = content;
@@ -1833,6 +1856,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     sourceEditorSaveStatus = '';
     sourceFileHandle = null;
     pendingExternalContent = null;
+    sourceEditor?.setActive(false);
     sourceEditor?.setContent(content);
     deactivateSourceEditor();
   }
