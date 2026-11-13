@@ -4,11 +4,12 @@ import {
   EditorModel,
   EditorView,
   LocalHistoryStrategy,
+  OffsetRange,
   Selection,
   StringValue,
   type AstNode,
 } from '@vscode/markdown-editor';
-import { autorun } from '@vscode/observables';
+import { autorun, observableValue } from '@vscode/observables';
 import {
   CODE_BLOCK_LANGUAGE_MAP,
   DIAGRAM_CODE_BLOCK_LANGUAGE_SET,
@@ -21,6 +22,9 @@ export interface HybridEditorController {
   getContent(): string;
   setContent(content: string): void;
   setActive(active: boolean): void;
+  setLayoutWidth(maxWidth: string): void;
+  revealSourceLine(line: number): void;
+  captureCurrentLine(): number | null;
   focus(): void;
 }
 
@@ -28,6 +32,28 @@ interface HybridEditorOptions {
   content: string;
   renderer: RendererService;
   onInput: (content: string) => void;
+}
+
+/** Convert the viewer's zero-based source line without losing CRLF columns. */
+function sourceLineToOffset(text: string, line: number): number {
+  const targetLine = Math.max(0, Math.floor(line));
+  if (targetLine === 0) return 0;
+  let currentLine = 0;
+  for (const match of text.matchAll(/\r\n|\n|\r/g)) {
+    currentLine += 1;
+    if (currentLine === targetLine) return match.index + match[0].length;
+  }
+  return text.length;
+}
+
+function offsetToSourceLine(text: string, offset: number): number {
+  const targetOffset = Math.max(0, Math.min(text.length, offset));
+  let line = 0;
+  for (const match of text.matchAll(/\r\n|\n|\r/g)) {
+    if (match.index + match[0].length > targetOffset) break;
+    line += 1;
+  }
+  return line;
 }
 
 /**
@@ -97,9 +123,11 @@ export function createHybridEditor(options: HybridEditorOptions): HybridEditorCo
     return placeholder;
   };
 
+  const limitedWidth = observableValue<number | undefined>('markdownViewerLimitedWidth', 1360);
   const view = new EditorView(model, {
     classNames: ['github-markdown-theme', 'mv-hybrid-editor'],
     presentation: 'editing',
+    limitedWidth,
     showReadonlyToggle: false,
     renderCustomCodeBlock: renderDiagram,
     onToggleCheckbox: (item, checked) => model.setTaskCheckboxChecked(item, checked),
@@ -117,10 +145,36 @@ export function createHybridEditor(options: HybridEditorOptions): HybridEditorCo
   view.element.setAttribute('aria-label', 'Rendered Markdown editor');
   const history = new LocalHistoryStrategy(model);
   const controller = new EditorController(model, view, { historyStrategy: history });
+  let active = false;
+  let revealVersion = 0;
+  let revealFrame: number | undefined;
+  let pendingReveal: { dispose(): void } | undefined;
+  let preservedSourceLine: number | null = null;
+  let preservedScrollTop = 0;
+  const revealInterruptEvents = ['wheel', 'pointerdown', 'touchstart', 'keydown'] as const;
+  const removeRevealInterruptListeners = (): void => {
+    for (const event of revealInterruptEvents) {
+      document.removeEventListener(event, interruptReveal, true);
+    }
+  };
+  const cancelReveal = (): void => {
+    revealVersion += 1;
+    if (revealFrame !== undefined) cancelAnimationFrame(revealFrame);
+    revealFrame = undefined;
+    pendingReveal?.dispose();
+    pendingReveal = undefined;
+    removeRevealInterruptListeners();
+  };
+  function interruptReveal(): void {
+    cancelReveal();
+  }
   let previousContent = options.content;
   const observer = autorun((reader) => {
     const content = reader.readObservable(model.sourceText).value;
     if (!applyingAuthoritativeContent && content !== previousContent) {
+      // Edits can insert lines above the anchor. Re-capture from the current
+      // document instead of returning the pre-edit source line on exit.
+      preservedSourceLine = null;
       options.onInput(content);
     }
     previousContent = content;
@@ -134,6 +188,8 @@ export function createHybridEditor(options: HybridEditorOptions): HybridEditorCo
     element: view.element,
     getContent: () => model.sourceText.get().value,
     setContent(content) {
+      cancelReveal();
+      preservedSourceLine = null;
       if (model.sourceText.get().value === content) return;
       applyingAuthoritativeContent = true;
       try {
@@ -142,9 +198,72 @@ export function createHybridEditor(options: HybridEditorOptions): HybridEditorCo
         applyingAuthoritativeContent = false;
       }
     },
-    setActive(active) {
-      model.readonlyMode.set(!active, undefined);
-      if (!active) model.selection.set(undefined, undefined);
+    setActive(value) {
+      cancelReveal();
+      preservedSourceLine = null;
+      active = value;
+      model.readonlyMode.set(!value, undefined);
+      if (!value) model.selection.set(undefined, undefined);
+    },
+    setLayoutWidth(maxWidth) {
+      const width = maxWidth.trim();
+      const pixels = width.endsWith('px') ? Number.parseFloat(width) : Number.NaN;
+      limitedWidth.set(Number.isFinite(pixels) && pixels > 0 ? pixels : undefined, undefined);
+    },
+    revealSourceLine(line) {
+      if (!active || !Number.isFinite(line)) return;
+      cancelReveal();
+      const version = revealVersion;
+      const source = model.sourceText.get();
+      const offset = sourceLineToOffset(source.value, line);
+      const selection = Selection.collapsed(offset);
+      const range = OffsetRange.emptyAt(offset);
+      const host = view.element.closest<HTMLElement>('#mv-hybrid-editor-host') ?? view.element;
+      preservedSourceLine = line;
+      model.selection.set(selection, undefined);
+      for (const event of revealInterruptEvents) {
+        document.addEventListener(event, interruptReveal, { capture: true, passive: true });
+      }
+      let attemptsRemaining = 60;
+      const reveal = (): void => {
+        if (version !== revealVersion || !active) return;
+        if (model.sourceText.get() !== source || model.selection.get() !== selection) {
+          cancelReveal();
+          return;
+        }
+        pendingReveal?.dispose();
+        pendingReveal = view.revealRangeAtTop(range, 'instant');
+        preservedScrollTop = host.scrollTop;
+        attemptsRemaining -= 1;
+        if (attemptsRemaining > 0) {
+          revealFrame = requestAnimationFrame(reveal);
+        } else {
+          revealFrame = undefined;
+          // The package still owns its final post-scroll correction and input
+          // cancellation; only our bounded retry loop finishes here.
+          removeRevealInterruptListeners();
+        }
+      };
+      revealFrame = requestAnimationFrame(reveal);
+    },
+    captureCurrentLine() {
+      const host = view.element.closest<HTMLElement>('#mv-hybrid-editor-host') ?? view.element;
+      // Reading lines include fractional progress inside a block. Preserve that
+      // exact anchor across a no-scroll round trip instead of repeatedly
+      // truncating it to the first source line of the visible editor block.
+      if (preservedSourceLine !== null && Math.abs(host.scrollTop - preservedScrollTop) < 1) {
+        return preservedSourceLine;
+      }
+      const blocks = view.documentViewNode.get()?.blocks
+        .filter(({ node }) => node.block.kind !== 'emptyBlock');
+      if (!blocks || blocks.length === 0) return null;
+      const viewport = host.getBoundingClientRect();
+      const visible = blocks.find(({ node }) => {
+        const rect = node.element.getBoundingClientRect();
+        return rect.bottom > viewport.top + 1 && rect.top < viewport.bottom - 1;
+      });
+      const block = visible ?? blocks[blocks.length - 1];
+      return offsetToSourceLine(model.sourceText.get().value, block.absoluteStart);
     },
     focus() {
       view.focus();

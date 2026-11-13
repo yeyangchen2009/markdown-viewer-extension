@@ -12,6 +12,9 @@ export interface SourceEditorController {
   getContent(): string;
   setStatus(status: string): void;
   setExternalChangeVisible(visible: boolean): void;
+  setLayoutWidth(maxWidth: string): void;
+  revealSourceLine(line: number): void;
+  captureCurrentLine(): number | null;
   focus(): void;
 }
 
@@ -190,6 +193,15 @@ export function createSourceEditor(options: SourceEditorOptions): SourceEditorCo
     },
     setExternalChangeVisible(visible) {
       conflict.hidden = !visible;
+    },
+    setLayoutWidth(maxWidth) {
+      hybrid.setLayoutWidth(maxWidth);
+    },
+    revealSourceLine(line) {
+      if (presentation === 'hybrid') hybrid.revealSourceLine(line);
+    },
+    captureCurrentLine() {
+      return presentation === 'hybrid' ? hybrid.captureCurrentLine() : null;
     },
     focus() {
       if (presentation === 'hybrid') hybrid.focus();

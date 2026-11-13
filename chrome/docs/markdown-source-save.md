@@ -51,6 +51,25 @@ flowchart TD
 - **同源文本，不等于同渲染管线。** Preview 使用 VS Code 组件内建的 Markdown 块渲染；完整阅读态继续使用原 markdown-it、目录、锚点、图表和导出管线。Slidev、HTML 转 Markdown、workspace/嵌入模式不开放本地源码编辑入口。
 - **运行要求是支持 `EditContext` 的现代 Chromium。** 当前构建目标为 Chrome 120；旧浏览器或不完整实现应使用 Source 兜底，不应把混合编辑器退化为简单 `contenteditable`。
 
+### 阅读位置与布局连续性
+
+阅读和 Preview 是两个不同排版、不同滚动容器，不能互相复制像素 `scrollTop`。切换时沿用 VS Code 的源码导航通路：阅读块 `data-line` → 0-based source line → 精确 Markdown 字符 offset → `Selection` / `OffsetRange` → `revealRangeAtTop()`。换行扫描同时支持 CRLF、LF 和 CR；CRLF 的字符 offset 必须计入两个字符。
+
+| 阅读布局 | Preview 内容宽度 | 同步方式 |
+|---|---:|---|
+| normal | 最大 `1360px` | 向 `limitedWidth` observable 写入数值 `1360` |
+| fullscreen | 不限宽，随视口变化 | observable 的**值**设为 `undefined` |
+| narrow | 最大 `680px` | 向 `limitedWidth` observable 写入数值 `680` |
+
+进入编辑和工具栏布局切换都更新同一个 observable。不能省略 `limitedWidth`（组件默认会变成 `900px`），也不能用普通选项 `limitedWidth: undefined` 代替可写 observable；normal、fullscreen、narrow 不互相拉平。
+
+定位与退出遵循以下规则：
+
+- 激活后在有界的 animation frame 窗口内重复 reveal，覆盖首次测量及图片、Mermaid 等异步高度变化；新定位、权威内容替换、停用以及 wheel、pointer、touch、key 输入都会取消旧任务，避免延迟校正抢回用户已经滚走的位置。
+- 退出前从公开 `documentViewNode.blocks` 中捕获视口内首个正文块，排除 `emptyBlock`，再由 `absoluteStart` 转回 source line，并显式交给阅读预览的渲染与恢复管线。
+- 阅读行号可能带有块内小数进度。若本次进入后没有真实滚动或编辑，退出直接保留进入时的精确行号，避免反复取整到块起点而累计漂移；实际编辑可能在其上方增删行，因此编辑后重新捕获，不能沿用旧行号。
+- 连续切换、文档重置或新渲染会使旧的预览恢复任务失效。恢复只保证对应源码块和块内位置，不宣称两种渲染器具有相同像素几何。
+
 ## 保存架构
 
 ```mermaid
@@ -111,6 +130,9 @@ flowchart TD
 
 真实 Edge 验收使用临时 Markdown 副本，不使用用户原始调研文件做写入测试：
 
+- [ ] 在长文档中部进入 Preview，对应标题或段落仍可见；未修改及修改后退出均回到对应阅读块，连续切换不累计漂移。
+- [ ] normal、fullscreen、narrow 三档进入 Preview 后分别保持 `1360px`、不限宽、`680px`，编辑中切换布局也保持相同语义。
+- [ ] CRLF 文档及目标上方延迟加载图片不会把定位挤到相邻段；主动滚动后不被旧校正拉回。
 - [ ] Preview 中点击标题、段落和列表，真实输入、撤销/重做及中文 IME 正常；Source 往返不丢文本。
 - [ ] Mermaid、PlantUML 非活动块正常显示，点击后编辑对应原始 fence；至少连续点击两个图表确认映射。
 - [ ] 切换明暗主题并检查窄屏布局；图表、正文、活动源码和状态栏保持可读。
@@ -138,6 +160,7 @@ flowchart TD
 | [VS Code：混合编辑器浏览器前端](https://github.com/microsoft/vscode/blob/c1263db0c58cde7cd15e9be2e53b255acd3f1629/extensions/markdown-language-features/markdown-editor-src/editor.ts) | EditorModel、EditorView、EditorController 与历史策略组合 |
 | [@vscode/markdown-editor 0.0.2-179](https://www.npmjs.com/package/@vscode/markdown-editor/v/0.0.2-179) | 非活动块渲染、活动块编辑精确 Markdown；独立浏览器宿主公开 API |
 | [VS Code：Markdown 编辑器构建配置](https://github.com/microsoft/vscode/blob/c1263db0c58cde7cd15e9be2e53b255acd3f1629/extensions/markdown-language-features/esbuild.markdownEditor.mts) | 浏览器 external 与字体打包方式 |
+| [VS Code：预览与编辑器导航](https://github.com/microsoft/vscode/blob/c1263db0c58cde7cd15e9be2e53b255acd3f1629/extensions/markdown-language-features/src/preview/markdownEditorNavigation.ts) | source line 与编辑器位置互通；公开 Selection / OffsetRange / reveal 导航，不跨排版复制 scrollTop |
 | [MIT 许可文本](https://github.com/microsoft/vscode/blob/main/LICENSE.txt) | 本 fork 随构建附带的 VS Code Markdown 编辑器许可依据；组件 package.json 声明 MIT |
 | [WICG/file-system-access #289](https://github.com/WICG/file-system-access/issues/289) | 扩展句柄权限提示问题；维护者归类为 Chromium 实现问题 |
 | [WICG/file-system-access #314](https://github.com/WICG/file-system-access/issues/314) | 扩展目录选择器失败；规范仓库不作为规范问题处理 |

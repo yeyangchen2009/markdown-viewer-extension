@@ -65,6 +65,7 @@ export function createToolbarManager(options: ToolbarManagerOptions): ToolbarMan
     onToggleSourceMode,
     getSourceMode,
     isSourceModeActive,
+    onLayoutChange,
     onToggleEditMode,
     onSaveSource,
     isEditModeActive,
@@ -543,6 +544,7 @@ export function createToolbarManager(options: ToolbarManagerOptions): ToolbarMan
         }
         currentLayout = layout;
         pageDiv.style.maxWidth = config.maxWidth;
+        onLayoutChange?.(config.maxWidth);
         layoutBtn.innerHTML = config.icon;
         layoutBtn.title = config.title;
         
