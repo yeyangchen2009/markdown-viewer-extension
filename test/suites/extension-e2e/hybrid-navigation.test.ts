@@ -351,9 +351,11 @@ describe('installed Chromium extension — hybrid reading continuity', { skip: S
     await heading.click();
     await page.keyboard.press('End');
     await page.keyboard.type(' edited');
-    await waitFor(page, `() => document.getElementById('mv-source-editor-input').value.includes(
-      ${JSON.stringify(`## ${KEYBOARD_HEADING} edited`)},
-    )`);
+    await waitFor(page, `() => Array.from(document.querySelectorAll(
+      '#mv-hybrid-editor-input .md-heading',
+    )).some((element) => element.textContent.includes(
+      ${JSON.stringify(`${KEYBOARD_HEADING} edited`)},
+    ))`);
 
     await exitHybrid(page, document.targetLine);
     await waitFor(page, `() => document.querySelector(

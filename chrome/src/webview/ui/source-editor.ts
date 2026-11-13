@@ -2,12 +2,10 @@ import { createHybridEditor } from './hybrid-editor';
 import type { RendererService } from '../../../../src/types/platform';
 
 export const SOURCE_EDITOR_ID = 'mv-source-editor';
-export type SourceEditorPresentation = 'hybrid' | 'source';
 
 export interface SourceEditorController {
   setActive(active: boolean): void;
   isActive(): boolean;
-  getPresentation(): SourceEditorPresentation;
   setContent(content: string): void;
   getContent(): string;
   setStatus(status: string): void;
@@ -21,15 +19,15 @@ export interface SourceEditorController {
 interface SourceEditorOptions {
   host: HTMLElement;
   renderer: RendererService;
-  onInput: (content: string, presentation: SourceEditorPresentation) => void;
+  onInput: (content: string) => void;
   onSave: () => void;
   onReloadExternal: () => void;
   onDismissExternal: () => void;
 }
 
 /**
- * A persistent Markdown source pane. It lives outside #markdown-wrapper so the
- * preview renderer can replace its own DOM without destroying focus or edits.
+ * A persistent rendered Markdown editor. It lives outside #markdown-wrapper so
+ * the preview renderer can replace its own DOM without destroying focus or edits.
  */
 export function createSourceEditor(options: SourceEditorOptions): SourceEditorController {
   const pane = document.createElement('section');
@@ -41,23 +39,10 @@ export function createSourceEditor(options: SourceEditorOptions): SourceEditorCo
   header.className = 'mv-source-editor-header';
   const title = document.createElement('span');
   title.textContent = 'Markdown';
-  const mode = document.createElement('div');
-  mode.className = 'mv-source-editor-mode';
-  const previewButton = document.createElement('button');
-  previewButton.type = 'button';
-  previewButton.id = 'mv-editor-preview-mode';
-  previewButton.textContent = 'Preview';
-  previewButton.setAttribute('aria-pressed', 'true');
-  const sourceButton = document.createElement('button');
-  sourceButton.type = 'button';
-  sourceButton.id = 'mv-editor-source-mode';
-  sourceButton.textContent = 'Source';
-  sourceButton.setAttribute('aria-pressed', 'false');
-  mode.append(previewButton, sourceButton);
   const status = document.createElement('span');
   status.id = 'mv-source-editor-status';
   status.textContent = 'All changes saved';
-  header.append(title, mode, status);
+  header.append(title, status);
 
   const conflict = document.createElement('div');
   conflict.id = 'mv-source-editor-conflict';
@@ -75,25 +60,7 @@ export function createSourceEditor(options: SourceEditorOptions): SourceEditorCo
   dismissButton.addEventListener('click', options.onDismissExternal);
   conflict.append(conflictText, reloadButton, dismissButton);
 
-  const textarea = document.createElement('textarea');
-  textarea.id = 'mv-source-editor-input';
-  textarea.setAttribute('aria-label', 'Markdown source');
-  textarea.spellcheck = false;
-  textarea.wrap = 'off';
-  textarea.autocapitalize = 'off';
-  textarea.autocomplete = 'off';
   let sourceContent = '';
-  let sourceLineEnding: '\n' | '\r\n' = '\n';
-  textarea.addEventListener('input', () => {
-    // textarea.value always exposes LF. Keep the authoritative source outside
-    // the DOM so merely entering Source mode cannot rewrite CRLF (or mixed)
-    // line endings; an actual Source edit consistently uses the original style.
-    sourceContent = sourceLineEnding === '\r\n'
-      ? textarea.value.replace(/\n/g, '\r\n')
-      : textarea.value;
-    options.onInput(sourceContent, 'source');
-  });
-  let presentation: SourceEditorPresentation = 'hybrid';
   let syncingContent = true;
   const hybrid = createHybridEditor({
     content: '',
@@ -101,48 +68,15 @@ export function createSourceEditor(options: SourceEditorOptions): SourceEditorCo
     onInput: (content) => {
       if (syncingContent) return;
       sourceContent = content;
-      textarea.value = content;
-      options.onInput(content, 'hybrid');
+      options.onInput(content);
     },
   });
   syncingContent = false;
   const hybridHost = document.createElement('div');
   hybridHost.id = 'mv-hybrid-editor-host';
-  hybridHost.hidden = true;
   hybridHost.append(hybrid.element);
 
-  const setPresentation = (value: SourceEditorPresentation): void => {
-    presentation = value;
-    const isHybrid = value === 'hybrid';
-    hybridHost.hidden = !isHybrid;
-    textarea.hidden = isHybrid;
-    previewButton.setAttribute('aria-pressed', String(isHybrid));
-    sourceButton.setAttribute('aria-pressed', String(!isHybrid));
-    if (!pane.hidden) {
-      document.documentElement.dataset.sourceEditor = value;
-      hybrid.setActive(isHybrid);
-    }
-    if (isHybrid) hybrid.setContent(sourceContent);
-  };
-  previewButton.addEventListener('click', () => {
-    setPresentation('hybrid');
-    hybrid.focus();
-  });
-  sourceButton.addEventListener('click', () => {
-    setPresentation('source');
-    textarea.focus();
-  });
-  textarea.addEventListener('keydown', (event) => {
-    if (event.key !== 'Tab' || event.ctrlKey || event.metaKey || event.altKey) {
-      return;
-    }
-    event.preventDefault();
-    const { selectionStart, selectionEnd } = textarea;
-    textarea.setRangeText('  ', selectionStart, selectionEnd, 'end');
-    textarea.dispatchEvent(new Event('input', { bubbles: true }));
-  });
-
-  pane.append(header, conflict, hybridHost, textarea);
+  pane.append(header, conflict, hybridHost);
   options.host.prepend(pane);
 
   // Bind when the editor is created, not after the viewer's asynchronous boot.
@@ -161,7 +95,9 @@ export function createSourceEditor(options: SourceEditorOptions): SourceEditorCo
     setActive(active) {
       pane.hidden = !active;
       if (active) {
-        setPresentation(presentation);
+        document.documentElement.dataset.sourceEditor = 'hybrid';
+        hybrid.setActive(true);
+        hybrid.setContent(sourceContent);
       } else {
         hybrid.setActive(false);
         delete document.documentElement.dataset.sourceEditor;
@@ -171,16 +107,11 @@ export function createSourceEditor(options: SourceEditorOptions): SourceEditorCo
     isActive() {
       return !pane.hidden;
     },
-    getPresentation() {
-      return presentation;
-    },
     setContent(content) {
       syncingContent = true;
       try {
         sourceContent = content;
-        sourceLineEnding = content.includes('\r\n') ? '\r\n' : '\n';
         hybrid.setContent(content);
-        if (textarea.value !== content) textarea.value = content;
       } finally {
         syncingContent = false;
       }
@@ -198,14 +129,13 @@ export function createSourceEditor(options: SourceEditorOptions): SourceEditorCo
       hybrid.setLayoutWidth(maxWidth);
     },
     revealSourceLine(line) {
-      if (presentation === 'hybrid') hybrid.revealSourceLine(line);
+      hybrid.revealSourceLine(line);
     },
     captureCurrentLine() {
-      return presentation === 'hybrid' ? hybrid.captureCurrentLine() : null;
+      return hybrid.captureCurrentLine();
     },
     focus() {
-      if (presentation === 'hybrid') hybrid.focus();
-      else textarea.focus();
+      hybrid.focus();
     },
   };
 }

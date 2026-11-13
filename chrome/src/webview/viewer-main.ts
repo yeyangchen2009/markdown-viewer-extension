@@ -44,7 +44,6 @@ import { createToolbarManager, generateToolbarHTML, layoutIcons } from './ui/too
 import {
   createSourceEditor,
   type SourceEditorController,
-  type SourceEditorPresentation,
 } from './ui/source-editor';
 import { saveSourceFile } from './ui/source-file-writer';
 
@@ -1646,9 +1645,8 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
       if (Number.isFinite(exitLine)) lastScrollLine = exitLine;
       previewScrollRestoreVersion += 1;
       sourceEditor.setActive(false);
-      // Hybrid edits never repaint the old reading surface while typing. Restore
-      // that surface once, on exit; Source edits may already have a newer render
-      // queued, in which case its normal coalescing path handles the refresh.
+      // Preview edits never repaint the old reading surface while typing.
+      // Restore that surface once, on exit, and preserve the captured line.
       if (sourceEditorPreviewContent !== liveRawContent) {
         queueSourceEditorPreview(0, exitLine);
       } else {
@@ -1709,9 +1707,9 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
       }
       return;
     }
-    // A debounced Source render may fire after the user returns to Preview.
-    // Do not carry the legacy split-view renderer into the hybrid session.
-    if (sourceEditor?.isActive() && sourceEditor.getPresentation() === 'hybrid') {
+    // An exit render may finish after the user has already re-entered Preview.
+    // Never replace the reading surface during the new editing session.
+    if (sourceEditor?.isActive()) {
       return;
     }
     const assembler = viewerAssembler ?? await waitForAssembler();
@@ -1731,25 +1729,18 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
       logThenPermissionError('sourceEditor.preview.failed', error);
     } finally {
       sourceEditorPreviewRunning = false;
-      const shouldFollowLatest = !sourceEditor?.isActive()
-        || sourceEditor.getPresentation() === 'source';
+      const shouldFollowLatest = !sourceEditor?.isActive();
       if (shouldFollowLatest && (sourceEditorPreviewQueued || content !== liveRawContent)) {
         queueSourceEditorPreview(60, restoreLine);
       }
     }
   }
 
-  function handleSourceEditorInput(
-    content: string,
-    presentation: SourceEditorPresentation,
-  ): void {
+  function handleSourceEditorInput(content: string): void {
     liveRawContent = content;
     sourceEditorDirty = content !== savedRawContent;
     sourceEditorSaveStatus = '';
     updateSourceEditorState();
-    if (presentation === 'source') {
-      queueSourceEditorPreview();
-    }
   }
 
   function getCurrentSaveTarget(): { filename: string; mimeType: string } {
