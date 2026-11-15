@@ -20,6 +20,7 @@ import { setSourceViewActive } from '../../../src/core/viewer/source-view';
 import { deliverFile } from '../../../src/utils/file-download';
 import { stripUrlQueryAndHash } from '../../../src/utils/document-url';
 import { LAYOUT_MAX_WIDTHS } from '../../../src/ui/layout-presets';
+import { setReaderControlsOpen } from '../../../src/ui/reader-controls';
 import { initSlidevViewer } from '../../../src/slidev/slidev-viewer';
 import { getWebExtensionApi } from '../../../src/utils/platform-info';
 import { getTableLayout, getImageLayout, getDiagramLayout, exportViewerDocument } from '../../../src/core/viewer/viewer-host';
@@ -202,21 +203,6 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
   function applyTocPanelSide(swapped: boolean): void {
     document.body.classList.toggle('toc-position-right', swapped);
     document.body.classList.toggle('gitbook-sidebar-left', swapped);
-
-    const toggleTocBtn = document.getElementById('toggle-toc-btn');
-    const toolbarLeft = document.querySelector('.toolbar-left');
-    const toolbarRight = document.querySelector('.toolbar-right');
-
-    if (!toggleTocBtn || !toolbarLeft || !toolbarRight) {
-      return;
-    }
-
-    if (swapped) {
-      toolbarRight.prepend(toggleTocBtn);
-    } else {
-      toolbarLeft.prepend(toggleTocBtn);
-    }
-
     syncResizeHandlePosition?.();
   }
 
@@ -885,18 +871,8 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     return document.documentElement.dataset.tocDisabled === '1';
   };
 
-  const applyTocButtonVisibility = (): void => {
-    const tocBtn = document.getElementById('toggle-toc-btn');
-    if (!tocBtn) return;
-    if (isTocDisabledForCurrentFile()) {
-      tocBtn.style.display = 'none';
-    } else {
-      tocBtn.style.display = '';
-    }
-  };
-
   const applyPredictedTocLayout = (hasHeadings: boolean | undefined, tocVisible = initialTocVisible): void => {
-    applyTocButtonVisibility();
+    setReaderControlsOpen(tocVisible);
 
     if (isTocDisabledForCurrentFile()) {
       hideTocForCodeView();
@@ -1033,7 +1009,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
   const initialZoom = initialState.zoom || 100;
   const initialSwapPanelSide = await platform.settings.get('swapPanelSide');
 
-  // Default TOC visibility based on screen width if no saved state
+  // TOC and toolbar stay hidden until the reader asks for them.
   let initialTocVisible: boolean;
   if (initialState.tocVisible !== undefined) {
     initialTocVisible = initialState.tocVisible;
@@ -1222,11 +1198,11 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     enableSourceToggle: true,
     enableRemarkMode: true,
   });
+  setReaderControlsOpen(initialTocVisible);
   if (!initialTocVisible) {
     document.body.classList.add('toc-hidden');
   }
   applyTocPanelSide(Boolean(initialSwapPanelSide));
-  applyTocButtonVisibility();
 
   const sourceEditorHost = document.getElementById('viewer-main-column');
   if (sourceEditorHost) {

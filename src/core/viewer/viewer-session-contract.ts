@@ -11,7 +11,7 @@ export type ViewerTocPresentation = 'sidebar' | 'floating';
 export function resolveDefaultTocVisibility(containerMode: ViewerContainerMode): boolean {
   switch (containerMode) {
     case 'browser':
-      return true;
+      return false;
     case 'panel':
       return false;
     case 'embedded':

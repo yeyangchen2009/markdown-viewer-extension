@@ -2,6 +2,7 @@
 // Handles TOC generation, toggle, and active item tracking
 
 import { isSourceViewActive } from '../../../../src/core/viewer/source-view';
+import { setReaderControlsOpen } from '../../../../src/ui/reader-controls';
 
 interface FileState {
   tocVisible?: boolean;
@@ -207,10 +208,11 @@ export function createTocManager(
       } else if (savedState?.tocVisible !== undefined) {
         shouldBeVisible = savedState.tocVisible;
       } else {
-        // No saved state - only mobile uses collapsed TOC by default.
-        shouldBeVisible = !isMobile;
+        // Reading controls are opt-in in every browser viewport.
+        shouldBeVisible = false;
       }
-      
+
+      setReaderControlsOpen(shouldBeVisible);
       const currentlyVisible = !tocDiv.classList.contains('hidden');
       
       // Only update if state doesn't match
@@ -257,6 +259,7 @@ export function createTocManager(
         overlayDiv.classList.add('hidden');
       }
       
+      setReaderControlsOpen(!willBeHidden);
       // Save TOC visibility state
       saveFileState({
         tocVisible: !willBeHidden

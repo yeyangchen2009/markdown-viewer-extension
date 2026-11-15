@@ -219,6 +219,14 @@ describe('installed Chrome extension — "Save File" naming', { skip: SKIP_EXT }
   ): Promise<{ filename: string; body: string }> {
     const downloadPromise = downloadSource.waitForEvent('download', { timeout: 30000 });
 
+    // Standalone readers keep the toolbar behind the floating trigger. Embedded
+    // viewers hide that trigger and continue to use their existing toolbar.
+    const trigger = target.locator('#toggle-toc-btn');
+    if (await trigger.isVisible()) {
+      await trigger.click();
+      await target.waitForSelector('#page-header', { state: 'visible' });
+    }
+
     // The toolbar wires its listeners a moment after the viewer renders, so a
     // click that lands in that window opens nothing. Repeat the interaction
     // (TESTING.md allows a retry for a race, never for an assertion).

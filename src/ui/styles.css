@@ -198,6 +198,10 @@ body {
   z-index: 1001;
 }
 
+body:not(.reader-controls-open) #page-header {
+  display: none;
+}
+
 /* Content row: main column + resize handle + GitBook sidebar */
 #page-content {
   flex: 1;
@@ -304,6 +308,32 @@ body {
 .toolbar-btn svg {
   fill: none;
   stroke: currentColor;
+}
+
+/* The only persistent chrome: a quiet trigger outside the hidden header. */
+#toggle-toc-btn {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 1100;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: 6px;
+  background: var(--color-bg-surface, var(--color-bg-body));
+  box-shadow: var(--shadow-toolbar);
+  opacity: 0.72;
+}
+
+#toggle-toc-btn:hover,
+#toggle-toc-btn:focus-visible,
+body.reader-controls-open #toggle-toc-btn {
+  opacity: 1;
+}
+
+#toggle-toc-btn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
 }
 
 .toolbar-menu-trigger {
@@ -786,7 +816,8 @@ body.remark-panel-open.toc-position-right #markdown-wrapper {
    Platforms only add the class(es) + map their theme variables — no per-
    platform style sheets. */
 .mv-embed #page-header,
-.mv-embed #toolbar {
+.mv-embed #toolbar,
+.mv-embed #toggle-toc-btn {
   display: none !important;
 }
 
@@ -1406,6 +1437,11 @@ html[data-source-editor='hybrid'] #markdown-wrapper {
     padding: 0 10px;
   }
 
+  #toggle-toc-btn {
+    right: 16px;
+    bottom: 16px;
+  }
+
   .file-name {
     display: none;
   }
@@ -1557,6 +1593,7 @@ html[data-source-editor='hybrid'] #markdown-wrapper {
   /* Hide toolbar header, TOC and overlay completely when printing */
   #page-header,
   #toolbar,
+  #toggle-toc-btn,
   #table-of-contents,
   #toc-overlay,
   #remark-sidebar,
