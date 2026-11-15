@@ -2,7 +2,6 @@
 // Handles TOC generation, toggle, and active item tracking
 
 import { isSourceViewActive } from '../../../../src/core/viewer/source-view';
-import { setReaderControlsOpen } from '../../../../src/ui/reader-controls';
 
 interface FileState {
   tocVisible?: boolean;
@@ -212,7 +211,6 @@ export function createTocManager(
         shouldBeVisible = false;
       }
 
-      setReaderControlsOpen(shouldBeVisible);
       const currentlyVisible = !tocDiv.classList.contains('hidden');
       
       // Only update if state doesn't match
@@ -259,7 +257,6 @@ export function createTocManager(
         overlayDiv.classList.add('hidden');
       }
       
-      setReaderControlsOpen(!willBeHidden);
       // Save TOC visibility state
       saveFileState({
         tocVisible: !willBeHidden

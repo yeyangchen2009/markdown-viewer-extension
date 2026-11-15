@@ -20,7 +20,6 @@ import { setSourceViewActive } from '../../../src/core/viewer/source-view';
 import { deliverFile } from '../../../src/utils/file-download';
 import { stripUrlQueryAndHash } from '../../../src/utils/document-url';
 import { LAYOUT_MAX_WIDTHS } from '../../../src/ui/layout-presets';
-import { setReaderControlsOpen } from '../../../src/ui/reader-controls';
 import { initSlidevViewer } from '../../../src/slidev/slidev-viewer';
 import { getWebExtensionApi } from '../../../src/utils/platform-info';
 import { getTableLayout, getImageLayout, getDiagramLayout, exportViewerDocument } from '../../../src/core/viewer/viewer-host';
@@ -872,7 +871,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
   };
 
   const applyPredictedTocLayout = (hasHeadings: boolean | undefined, tocVisible = initialTocVisible): void => {
-    setReaderControlsOpen(tocVisible);
+    document.body.classList.toggle('toc-hidden', !tocVisible);
 
     if (isTocDisabledForCurrentFile()) {
       hideTocForCodeView();
@@ -1198,10 +1197,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     enableSourceToggle: true,
     enableRemarkMode: true,
   });
-  setReaderControlsOpen(initialTocVisible);
-  if (!initialTocVisible) {
-    document.body.classList.add('toc-hidden');
-  }
+  document.body.classList.toggle('toc-hidden', !initialTocVisible);
   applyTocPanelSide(Boolean(initialSwapPanelSide));
 
   const sourceEditorHost = document.getElementById('viewer-main-column');

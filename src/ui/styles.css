@@ -198,7 +198,7 @@ body {
   z-index: 1001;
 }
 
-body:not(.reader-controls-open) #page-header {
+body.toc-hidden #page-header {
   display: none;
 }
 
@@ -327,7 +327,7 @@ body:not(.reader-controls-open) #page-header {
 
 #toggle-toc-btn:hover,
 #toggle-toc-btn:focus-visible,
-body.reader-controls-open #toggle-toc-btn {
+body:not(.toc-hidden) #toggle-toc-btn {
   opacity: 1;
 }
 

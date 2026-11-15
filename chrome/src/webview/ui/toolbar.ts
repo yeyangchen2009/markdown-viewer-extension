@@ -23,7 +23,6 @@ import type { BookExportPhase } from '../../../../src/types/book-export';
 import { createRemarkMode } from '../../../../src/ui/remark-mode';
 import type { RemarkModeController } from '../../../../src/ui/remark-mode';
 import { LAYOUT_MAX_WIDTHS } from '../../../../src/ui/layout-presets';
-import { areReaderControlsOpen, setReaderControlsOpen } from '../../../../src/ui/reader-controls';
 import { BookExportProgressModel } from './book-export-progress';
 
 // SVG icons for different layouts
@@ -450,7 +449,7 @@ export function createToolbarManager(options: ToolbarManagerOptions): ToolbarMan
    * toggles the DOM state directly.
    */
   function setTocVisibility(visible: boolean): void {
-    setReaderControlsOpen(visible);
+    document.body.classList.toggle('toc-hidden', !visible);
     if (onSetTocVisibility) {
       onSetTocVisibility(visible);
       return;
@@ -463,7 +462,6 @@ export function createToolbarManager(options: ToolbarManagerOptions): ToolbarMan
     }
 
     tocDiv.classList.toggle('hidden', !visible);
-    document.body.classList.toggle('toc-hidden', !visible);
     if (isMobile && visible) {
       overlayDiv.classList.remove('hidden');
     } else {
@@ -494,7 +492,7 @@ export function createToolbarManager(options: ToolbarManagerOptions): ToolbarMan
     if (toggleTocBtn && tocDiv && overlayDiv) {
       toggleTocBtn.addEventListener('click', () => {
         // The trigger also owns the toolbar, so it stays usable without headings.
-        setTocVisibility(!areReaderControlsOpen());
+        setTocVisibility(document.body.classList.contains('toc-hidden'));
       });
     }
 
@@ -866,7 +864,7 @@ export function createToolbarManager(options: ToolbarManagerOptions): ToolbarMan
         e.preventDefault();
         const tocDiv = document.getElementById('table-of-contents');
         if (tocDiv) {
-          setTocVisibility(!areReaderControlsOpen());
+          setTocVisibility(document.body.classList.contains('toc-hidden'));
         }
         return;
       }
@@ -1150,7 +1148,7 @@ export function generateToolbarHTML(options: GenerateToolbarHTMLOptions): string
       </aside>
     </div>
   </div>
-  <button id="toggle-toc-btn" class="toolbar-btn" title="${toggleTocTitleAttr}" aria-label="${toggleTocTitleAttr}" aria-controls="page-header table-of-contents" aria-expanded="false">
+  <button id="toggle-toc-btn" class="toolbar-btn" title="${toggleTocTitleAttr}" aria-label="${toggleTocTitleAttr}">
     <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
       <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
     </svg>
