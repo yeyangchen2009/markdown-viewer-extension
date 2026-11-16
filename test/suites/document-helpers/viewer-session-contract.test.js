@@ -7,8 +7,8 @@ import {
 } from '../../../src/core/viewer/viewer-session-contract.ts';
 
 describe('viewer container defaults', () => {
-  it('uses visible TOC by default for browser mode', () => {
-    assert.strictEqual(resolveDefaultTocVisibility('browser'), true);
+  it('keeps browser reading controls collapsed by default', () => {
+    assert.strictEqual(resolveDefaultTocVisibility('browser'), false);
   });
 
   it('uses hidden TOC by default for panel mode', () => {

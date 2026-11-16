@@ -449,6 +449,7 @@ export function createToolbarManager(options: ToolbarManagerOptions): ToolbarMan
    * toggles the DOM state directly.
    */
   function setTocVisibility(visible: boolean): void {
+    document.body.classList.toggle('toc-hidden', !visible);
     if (onSetTocVisibility) {
       onSetTocVisibility(visible);
       return;
@@ -461,7 +462,6 @@ export function createToolbarManager(options: ToolbarManagerOptions): ToolbarMan
     }
 
     tocDiv.classList.toggle('hidden', !visible);
-    document.body.classList.toggle('toc-hidden', !visible);
     if (isMobile && visible) {
       overlayDiv.classList.remove('hidden');
     } else {
@@ -491,13 +491,8 @@ export function createToolbarManager(options: ToolbarManagerOptions): ToolbarMan
 
     if (toggleTocBtn && tocDiv && overlayDiv) {
       toggleTocBtn.addEventListener('click', () => {
-        // If TOC has no content (no headings), do nothing
-        if (tocDiv.style.display === 'none') {
-          return;
-        }
-
-        const nextVisible = tocDiv.classList.contains('hidden');
-        setTocVisibility(nextVisible);
+        // The trigger also owns the toolbar, so it stays usable without headings.
+        setTocVisibility(document.body.classList.contains('toc-hidden'));
       });
     }
 
@@ -869,8 +864,7 @@ export function createToolbarManager(options: ToolbarManagerOptions): ToolbarMan
         e.preventDefault();
         const tocDiv = document.getElementById('table-of-contents');
         if (tocDiv) {
-          const nextVisible = tocDiv.classList.contains('hidden');
-          setTocVisibility(nextVisible);
+          setTocVisibility(document.body.classList.contains('toc-hidden'));
         }
         return;
       }
@@ -1056,11 +1050,6 @@ export function generateToolbarHTML(options: GenerateToolbarHTMLOptions): string
     <div id="page-header">
       <div id="toolbar">
         <div class="toolbar-left">
-          <button id="toggle-toc-btn" class="toolbar-btn" title="${toggleTocTitleAttr}">
-            <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
-              <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-            </svg>
-          </button>
           <span id="file-name" class="file-name"></span>
           <div id="processing-indicator" class="processing-indicator hidden">
             <svg class="progress-circle" width="18" height="18" viewBox="0 0 18 18">
@@ -1159,6 +1148,11 @@ export function generateToolbarHTML(options: GenerateToolbarHTMLOptions): string
       </aside>
     </div>
   </div>
+  <button id="toggle-toc-btn" class="toolbar-btn" title="${toggleTocTitleAttr}" aria-label="${toggleTocTitleAttr}">
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    </svg>
+  </button>
   <div id="table-of-contents" class="${initialTocClass}"></div>
   <div id="toc-overlay" class="hidden"></div>
   <div id="remark-sidebar" class="remark-sidebar remark-sidebar-closed"></div>
