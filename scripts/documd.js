@@ -990,6 +990,16 @@ export async function createServeServer(rootDir, options = {}) {
     });
   });
 
+  // server.close() only stops accepting; its callback waits for every existing
+  // connection to finish. Keep-alive clients and the half-open sockets left by
+  // a refused 413 upload would therefore hang shutdown (and the test process)
+  // forever, so track the sockets and destroy them when closing.
+  const connections = new Set();
+  server.on('connection', (socket) => {
+    connections.add(socket);
+    socket.on('close', () => connections.delete(socket));
+  });
+
   try {
     await new Promise((resolve, reject) => {
       server.once('error', reject);
@@ -1015,7 +1025,18 @@ export async function createServeServer(rootDir, options = {}) {
     origin,
     basePath,
     port: address.port,
-    close: () => new Promise((resolve) => server.close(() => resolve())),
+    close: () => new Promise((resolve) => {
+      // A runtime that does not fire the close callback must not hang the
+      // caller; the destroyed sockets already release every bound resource.
+      const fallback = setTimeout(() => resolve(), 1000);
+      for (const socket of connections) {
+        socket.destroy();
+      }
+      server.close(() => {
+        clearTimeout(fallback);
+        resolve();
+      });
+    }),
   };
 }
 
