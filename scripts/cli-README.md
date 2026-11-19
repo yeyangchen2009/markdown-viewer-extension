@@ -26,7 +26,11 @@ documd --version
 
 ```bash
 documd <input> [<output>] [--format <f>] [options]
+documd serve [<root-dir>] [--port <n>] [--token <hex>] [--max-body-mb <n>]
 ```
+
+`documd serve` is a long-running local server rather than an export; see
+[Local editing server](#local-editing-server-documd-serve) below.
 
 The output file is the second positional argument (pandoc style). Its
 extension selects the format — when the input extension is a known input
@@ -77,6 +81,60 @@ documd SUMMARY.md --book                 # book.epub (default)
 documd SUMMARY.md --book --format docx   # merged DOCX
 documd SUMMARY.md --book --format pdf    # one page per chapter
 ```
+
+## Local editing server (`documd serve`)
+
+`serve` hosts a Markdown directory over loopback HTTP so the Markdown Viewer
+browser extension can open the files as `text/plain` URLs and save edits back
+to the original files with same-origin `PUT` requests. No browser is launched
+and nothing is exported; the process stays in the foreground until Ctrl+C.
+
+```bash
+documd serve                          # serve the current directory on port 4317
+documd serve ./notes --port 8080      # explicit port; 0 picks a random free port
+documd serve ./notes --token <hex>    # fixed token instead of a random one
+documd serve ./notes --max-body-mb 8  # cap PUT bodies at 8 MiB (default 64)
+```
+
+The startup banner prints the token-prefixed URLs (the top-level Markdown
+files are listed) and nothing else logs the token.
+
+### Security model
+
+The server is built for a single-user local machine; every request passes the
+following layers, in order:
+
+| Layer | Mechanism | What it stops |
+|---|---|---|
+| Socket | Binds `127.0.0.1` only | Connections from other machines |
+| Host header | Allow-list `127.0.0.1` / `::1` / `localhost`, port must match | DNS rebinding attacks against the loopback service |
+| Token | Random 36-hex-char path prefix (`/__documd/<token>/…`), the sole credential | Requests that do not already know the token |
+| Root confinement | Lexical `isWithin()` check plus WHATWG URL normalisation | `../` and encoded traversal outside the served root |
+| File rule | `PUT` only targets files that already exist; no creation, no directory listings | The save route cannot create or enumerate files |
+| Atomic writes | Same-directory temp file + rename; failures remove the temp file | Half-written files after a failed or aborted save |
+| Body limits | `Content-Length` pre-check and streaming cap, both `413` | Unbounded uploads filling the disk |
+
+Responses carry `Cache-Control: no-store` and `Referrer-Policy: no-referrer`,
+so the token is not leaked through referrers. Conditional saves use
+`If-Match`/`ETag` (the ETag is the SHA-256 of the file contents): a stale
+editor gets `412 Precondition Failed` and the disk file is untouched.
+
+### Token handling caveat
+
+The token is part of the URL, so browser history, bookmarks and address-bar
+suggestions retain it. Only use `serve` on a local user account you trust,
+prefer the random token (the default), and stop the server with Ctrl+C when
+the editing session is over. A leaked token grants read and overwrite access
+to every existing file under the served root for as long as the process runs.
+
+### Status codes
+
+`200`/`204` (read/saved), `304` (unchanged ETag), `403` (bad Host or root
+escape), `404` (unknown token, missing file, directory), `405` (unsupported
+method), `412` (stale `If-Match`), `413` (body over the limit), `415`
+(non-`text/*` Content-Type), `500` (unexpected server error). Startup failures
+(missing root, port already in use, bad token) exit non-zero with the reason
+on stderr; the running server exits `0` on Ctrl+C.
 
 ## Exporting figures and images
 
@@ -150,6 +208,9 @@ e.g. when a missing optional image should not stop a batch conversion.
 | `--chrome <path>` | Explicit Chrome/Chromium binary (or `DOCUMD_CHROME_PATH`) |
 | `--browser-arg <flag>` | Extra Chromium flag, repeatable (or `DOCUMD_CHROME_ARGS`) |
 | `--timeout <seconds>` | Render timeout (default 120) |
+| `--port <n>` | `serve`: loopback port (default 4317, `0` = random free port) |
+| `--token <hex>` | `serve`: token path prefix credential (default: random 36 hex chars) |
+| `--max-body-mb <n>` | `serve`: maximum PUT body size in MiB (default 64) |
 | `-h, --help` | Show help |
 
 ## Browser

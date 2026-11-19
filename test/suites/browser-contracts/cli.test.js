@@ -192,6 +192,27 @@ describe('CLI output format', () => {  it('defaults markdown input to html', () 
     assert.equal(parseArgs(['--help']).help, true);
   });
 
+  it('parses documd serve separately from the pandoc-style positional rules', () => {
+    const defaults = parseArgs(['serve']);
+    assert.equal(defaults.serve, true);
+    assert.equal(defaults.serveRoot, '.');
+    assert.equal(defaults.servePort, 4317);
+    assert.equal(defaults.serveMaxBodyMb, 64);
+    assert.equal(defaults.serveToken, undefined, 'the token is generated at server start, not parse time');
+    assert.equal(defaults.input, undefined, 'serve has no input file and must not trip the positional check');
+
+    const explicit = parseArgs(['serve', './notes', '--port', '0', '--token', '0123456789abcdef', '--max-body-mb', '8']);
+    assert.equal(explicit.serve, true);
+    assert.equal(explicit.serveRoot, './notes');
+    assert.equal(explicit.servePort, 0);
+    assert.equal(explicit.serveToken, '0123456789abcdef');
+    assert.equal(explicit.serveMaxBodyMb, 8);
+
+    assert.throws(() => parseArgs(['serve', 'a', 'b']), /serve accepts at most one root directory/);
+    assert.throws(() => parseArgs(['serve', '--port', '65536']), /--port must be an integer between 0 and 65535/);
+    assert.throws(() => parseArgs(['serve', '--max-body-mb', '0']), /--max-body-mb must be a positive integer/);
+  });
+
   it('rejects unknown formats, uninferable outputs and format/input mismatches', () => {
     assert.throws(
       () => parseArgs(['flow.puml', '--format', 'webp']),

@@ -23,3 +23,4 @@ import './theme-color-scheme-contract.test.ts';
 import './font-config.test.ts';
 import './openapi-render.test.ts';
 import './element-contract.test.ts';
+import './cli-serve.test.ts';

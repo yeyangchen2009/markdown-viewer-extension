@@ -29,6 +29,32 @@ const CLI_PKG = JSON.parse(readFileSync(CLI_PKG_PATH, 'utf8'));
 const CLI_VERSION = CLI_PKG.version;
 const CLI_HOMEPAGE = 'https://docu.md';
 
+// `documd serve` defaults. Declared before HELP because its template
+// interpolates them at module evaluation time. The server is loopback-only;
+// the token path prefix is the sole request credential, so no other auth
+// state is kept.
+const SERVE_DEFAULT_PORT = 4317;
+const SERVE_DEFAULT_MAX_BODY_MB = 64;
+const SERVE_TEXT_EXTENSIONS = new Set(['.md', '.markdown', '.mdown', '.mkd', '.txt']);
+const SERVE_ALLOWED_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
+const SERVE_METHODS = new Set(['GET', 'HEAD', 'PUT', 'OPTIONS']);
+
+function parseServePort(value) {
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new Error('--port must be an integer between 0 and 65535');
+  }
+  return port;
+}
+
+function parseServeMaxBodyMb(value) {
+  const mb = Number(value);
+  if (!Number.isInteger(mb) || mb <= 0) {
+    throw new Error('--max-body-mb must be a positive integer');
+  }
+  return mb;
+}
+
 // Defaults in the help text are derived from the shared settings schema so
 // the CLI help can never drift from settings-schema.json.
 const HELP = `documd v${CLI_VERSION} — ${CLI_HOMEPAGE}
@@ -37,6 +63,7 @@ Render Markdown / diagrams / books with headless Chromium
 Usage:
   documd <input> [<output>] [--format <f>] [options]
   documd <input> --assets <dir> [--kind <k>] [--only <list>]
+  documd serve [<root-dir>] [--port <n>] [--token <hex>] [--max-body-mb <n>]
 
 The second positional is treated as the output file (pandoc style) when its
 extension is a known output format; the input extension must be a known input
@@ -83,8 +110,18 @@ Options:
       --chrome <path>       Explicit Chrome/Chromium binary (DOCUMD_CHROME_PATH)
       --browser-arg <flag>  Extra Chromium flag, repeatable (DOCUMD_CHROME_ARGS)
       --timeout <seconds>   Overall render timeout (default: 120)
+      --port <n>            serve: loopback port (default ${SERVE_DEFAULT_PORT}, 0 = random)
+      --token <hex>         serve: token path prefix credential (default: random 36 hex chars)
+      --max-body-mb <n>     serve: maximum PUT body size in MiB (default ${SERVE_DEFAULT_MAX_BODY_MB})
   -v, --version             Print the version and exit
   -h, --help                Show this help
+
+Local editing server (documd serve):
+  Serves a directory on http://127.0.0.1 only, behind a random token path
+  prefix. Markdown files are served as text/plain so the Markdown Viewer
+  browser extension injects on them, and same-origin PUT writes the editor
+  content back to the original file atomically. Host header checks, root
+  confinement and a body limit are always on; no browser is launched.
 
 Website: ${CLI_HOMEPAGE}
 `;
@@ -172,6 +209,9 @@ export function parseArgs(args) {
     assetKind: 'all',
     failOnError: true,
     timeoutMs: 120_000,
+    // `documd serve` defaults; ignored by every export command.
+    servePort: SERVE_DEFAULT_PORT,
+    serveMaxBodyMb: SERVE_DEFAULT_MAX_BODY_MB,
   };
   const positional = [];
 
@@ -259,11 +299,31 @@ export function parseArgs(args) {
       }
       options.timeoutMs = seconds * 1000;
       i += 1;
+    } else if (arg === '--port') {
+      options.servePort = parseServePort(takeValue(args, i, arg));
+      i += 1;
+    } else if (arg === '--token') {
+      options.serveToken = takeValue(args, i, arg);
+      i += 1;
+    } else if (arg === '--max-body-mb') {
+      options.serveMaxBodyMb = parseServeMaxBodyMb(takeValue(args, i, arg));
+      i += 1;
     } else if (arg.startsWith('-')) {
       throw new Error(`Unknown option: ${arg}`);
     } else {
       positional.push(arg);
     }
+  }
+
+  // `documd serve` is a long-running local server, not an export: it has no
+  // input/output files, so it bypasses the pandoc-style positional rules below.
+  if (!options.help && !options.version && positional[0] === 'serve') {
+    if (positional.length > 2) {
+      throw new Error('serve accepts at most one root directory: documd serve [<root-dir>] [options]');
+    }
+    options.serve = true;
+    options.serveRoot = positional[1] || '.';
+    return options;
   }
 
   if (!options.help && !options.version) {
@@ -642,6 +702,376 @@ async function startAssetServer(documentDir) {
     resourceBaseUrl: `${origin}${basePath}/`,
     close: () => new Promise((resolve) => server.close(resolve)),
   };
+}
+
+// ── `documd serve`: loopback editing server ─────────────────────────────────
+
+function serveMimeType(filePath) {
+  const extension = path.extname(filePath).toLowerCase();
+  // The extension only injects on text/plain responses whose URL ends in a
+  // Markdown extension; the generic table maps .md to octet-stream, so the
+  // editable text types are overridden here.
+  if (SERVE_TEXT_EXTENSIONS.has(extension)) return 'text/plain; charset=utf-8';
+  return mimeType(filePath);
+}
+
+function validateServeToken(token) {
+  if (typeof token !== 'string' || token.length < 8 || /[/?#\s]/.test(token)) {
+    throw new Error('--token must be at least 8 characters and contain no "/", "?", "#" or whitespace');
+  }
+  return token;
+}
+
+// DNS rebinding wall: a browser pointed at a rebinding name still sends that
+// name in the Host header, so every fs-touching request must present a loopback
+// host naming the real listening port.
+function isAllowedServeHost(hostHeader, actualPort) {
+  if (!hostHeader) return false;
+  let parsed;
+  try {
+    parsed = new URL(`http://${hostHeader}`);
+  } catch {
+    return false;
+  }
+  // WHATWG URL already strips IPv6 brackets from hostname; the replace is
+  // belt-and-braces for runtimes that keep them.
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (!SERVE_ALLOWED_HOSTS.has(hostname)) return false;
+  // An empty port means the scheme default; an explicit port must match.
+  if (parsed.port !== '' && Number(parsed.port) !== actualPort) return false;
+  return true;
+}
+
+function sha256Etag(buffer) {
+  return `"${crypto.createHash('sha256').update(buffer).digest('hex')}"`;
+}
+
+// Event-style body collection (no async iteration) to stay within the fibjs
+// node:http compatibility surface. Oversized bodies reject; the caller sends
+// 413 before destroying the socket, so a chunked upload past the limit is never
+// fully buffered and the client still receives the status line.
+function collectRequestBody(request, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let settled = false;
+    request.on('data', (chunk) => {
+      if (settled) return;
+      size += chunk.length;
+      if (size > maxBytes) {
+        settled = true;
+        const error = new Error('Request body exceeds the size limit');
+        error.code = 'MV_BODY_TOO_LARGE';
+        reject(error);
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on('end', () => {
+      if (!settled) {
+        settled = true;
+        resolve(Buffer.concat(chunks));
+      }
+    });
+    request.on('error', (error) => {
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
+    });
+  });
+}
+
+/**
+ * `documd serve` server: loopback-only static hosting with same-origin PUT
+ * write-back for the browser extension's source editor.
+ *
+ * Defence in depth, in request order:
+ *   1. bind 127.0.0.1 only — the socket is unreachable off the machine;
+ *   2. Host header allow-list — DNS rebinding replies carry a foreign Host;
+ *   3. random token path prefix — the sole request credential;
+ *   4. isWithin() root confinement — traversal attempts never reach fs writes;
+ *   5. PUT targets must already be regular files — the route cannot create files.
+ * Writes are same-directory tmp+rename, so a failed save never leaves a partial
+ * target file. Exported for tests and never imports playwright.
+ */
+export async function createServeServer(rootDir, options = {}) {
+  const absoluteRoot = path.resolve(rootDir);
+  const token = options.token
+    ? validateServeToken(options.token)
+    : crypto.randomBytes(18).toString('hex');
+  const maxBodyMb = options.maxBodyMb ?? SERVE_DEFAULT_MAX_BODY_MB;
+  const maxBodyBytes = maxBodyMb * 1024 * 1024;
+  const requestedPort = options.port ?? SERVE_DEFAULT_PORT;
+  const basePath = `/__documd/${token}`;
+  const securityHeaders = {
+    'cache-control': 'no-store',
+    'referrer-policy': 'no-referrer',
+  };
+  let listeningPort = requestedPort;
+
+  async function handleGetOrHead(request, response, method, localPath, stats) {
+    const data = await fs.readFile(localPath);
+    const etag = sha256Etag(data);
+    const ifNoneMatch = request.headers['if-none-match'];
+    if (ifNoneMatch) {
+      const candidates = ifNoneMatch.split(',').map((value) => value.trim());
+      if (candidates.includes(etag) || candidates.includes('*')) {
+        response.writeHead(304, {
+          ...securityHeaders,
+          etag,
+          'last-modified': stats.mtime.toUTCString(),
+        });
+        response.end();
+        return;
+      }
+    }
+    response.writeHead(200, {
+      ...securityHeaders,
+      'content-type': serveMimeType(localPath),
+      etag,
+      'last-modified': stats.mtime.toUTCString(),
+      'content-length': String(data.length),
+    });
+    // HEAD keeps the full headers but never sends the body.
+    response.end(method === 'HEAD' ? undefined : data);
+  }
+
+  // Refuse a request whose body must not be consumed (wrong type, too large).
+  // The response is flushed before the socket is torn down with destroySoon():
+  // an immediate destroy() on Windows sends RST while the response is still in
+  // the socket receive buffer, so the client would see a reset instead of the
+  // status line.
+  function refuseAndClose(response, request, status, message) {
+    response.writeHead(status, { ...securityHeaders, connection: 'close' });
+    response.end(message, () => {
+      request.socket?.destroySoon();
+    });
+  }
+
+  async function handlePut(request, response, localPath) {
+    // Missing Content-Type is accepted (curl-style clients); any present type
+    // must be text/*. Binary overwrites are refused before the body is buffered.
+    const contentType = (request.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+    if (contentType && !contentType.startsWith('text/')) {
+      refuseAndClose(response, request, 415, 'Unsupported media type');
+      return;
+    }
+
+    // Content-Length lets a declared-oversized upload fail without reading a byte.
+    const contentLength = request.headers['content-length'];
+    if (contentLength !== undefined) {
+      const declared = Number(contentLength);
+      if (Number.isFinite(declared) && declared > maxBodyBytes) {
+        refuseAndClose(response, request, 413, 'Payload too large');
+        return;
+      }
+    }
+
+    let body;
+    try {
+      body = await collectRequestBody(request, maxBodyBytes);
+    } catch (error) {
+      if (error?.code === 'MV_BODY_TOO_LARGE') {
+        if (!response.headersSent) {
+          refuseAndClose(response, request, 413, 'Payload too large');
+        }
+        return;
+      }
+      throw error;
+    }
+
+    // Optimistic concurrency: If-Match carries the ETag the editor last read.
+    // A mismatch fails with 412 and the disk is not touched. No If-Match means
+    // an unconditional overwrite (the user-confirmed conflict path).
+    const currentData = await fs.readFile(localPath);
+    const currentEtag = sha256Etag(currentData);
+    const ifMatch = request.headers['if-match'];
+    if (ifMatch !== undefined) {
+      const candidates = ifMatch.split(',').map((value) => value.trim());
+      if (!candidates.includes('*') && !candidates.includes(currentEtag)) {
+        response.writeHead(412, { ...securityHeaders, etag: currentEtag });
+        response.end('Precondition failed');
+        return;
+      }
+    }
+
+    // Same-directory temp file: a cross-volume rename is not atomic on Windows,
+    // and the editor's abort invariant maps to "target file never half-written".
+    const tmpName = `.${path.basename(localPath)}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+    const tmpPath = path.join(path.dirname(localPath), tmpName);
+    try {
+      await fs.writeFile(tmpPath, body);
+      await fs.rename(tmpPath, localPath);
+    } catch (error) {
+      await fs.rm(tmpPath, { force: true }).catch(() => {});
+      throw error;
+    }
+
+    response.writeHead(204, { ...securityHeaders, etag: sha256Etag(body) });
+    response.end();
+  }
+
+  async function handleServeRequest(request, response) {
+    const method = (request.method || 'GET').toUpperCase();
+
+    // Same-origin PUT never triggers a CORS preflight, but answer OPTIONS so a
+    // manual probe gets a clean 204 instead of a 405.
+    if (method === 'OPTIONS') {
+      response.writeHead(204, securityHeaders);
+      response.end();
+      return;
+    }
+    if (!SERVE_METHODS.has(method)) {
+      response.writeHead(405, { ...securityHeaders, allow: 'GET, HEAD, PUT, OPTIONS' });
+      response.end('Method not allowed');
+      return;
+    }
+
+    // Host check precedes the token check: a forged Host learns nothing.
+    if (!isAllowedServeHost(request.headers.host, listeningPort)) {
+      response.writeHead(403, securityHeaders);
+      response.end('Forbidden host');
+      return;
+    }
+
+    const url = new URL(request.url || '/', 'http://127.0.0.1');
+    if (!url.pathname.startsWith(`${basePath}/`)) {
+      response.writeHead(404, securityHeaders);
+      response.end('Not found');
+      return;
+    }
+
+    // WHATWG URL normalisation already collapses plain "/../" segments (they
+    // lose the token prefix and 404 above); encoded traversal survives to here
+    // and is caught by the lexical root-confinement check.
+    const relativePath = decodeURIComponent(url.pathname.slice(basePath.length + 1));
+    const localPath = path.resolve(absoluteRoot, relativePath);
+    if (!isWithin(absoluteRoot, localPath)) {
+      response.writeHead(403, securityHeaders);
+      response.end('Outside served root');
+      return;
+    }
+
+    let stats;
+    try {
+      stats = await fs.stat(localPath);
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        response.writeHead(404, securityHeaders);
+        response.end('Not found');
+        return;
+      }
+      throw error;
+    }
+    // No directory listings: directories and special files read as 404, and
+    // PUT cannot create a missing file.
+    if (!stats.isFile()) {
+      response.writeHead(404, securityHeaders);
+      response.end('Not found');
+      return;
+    }
+
+    if (method === 'PUT') {
+      await handlePut(request, response, localPath);
+      return;
+    }
+    await handleGetOrHead(request, response, method, localPath, stats);
+  }
+
+  const server = http.createServer((request, response) => {
+    handleServeRequest(request, response).catch(() => {
+      if (response.headersSent) {
+        response.destroy();
+        return;
+      }
+      response.writeHead(500, securityHeaders);
+      response.end('Internal server error');
+    });
+  });
+
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(requestedPort, '127.0.0.1', resolve);
+    });
+  } catch (error) {
+    if (error?.code === 'EADDRINUSE') {
+      throw new Error(
+        `Port ${requestedPort} is already in use; choose another with --port (or --port 0 for a random port)`,
+      );
+    }
+    throw error;
+  }
+
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    server.close();
+    throw new Error('Unable to determine serve server address');
+  }
+  listeningPort = address.port;
+  const origin = `http://127.0.0.1:${address.port}`;
+  return {
+    origin,
+    basePath,
+    port: address.port,
+    close: () => new Promise((resolve) => server.close(() => resolve())),
+  };
+}
+
+/**
+ * `documd serve` process entry: validate the root, start the loopback server
+ * and hold the process open until SIGINT/SIGTERM. No browser is launched.
+ */
+export async function runServe(options) {
+  const root = path.resolve(options.serveRoot || '.');
+  let stats;
+  try {
+    stats = await fs.stat(root);
+  } catch {
+    throw new Error(`serve root does not exist: ${root}`);
+  }
+  if (!stats.isDirectory()) {
+    throw new Error(`serve root is not a directory: ${root}`);
+  }
+
+  const server = await createServeServer(root, {
+    port: options.servePort,
+    token: options.serveToken,
+    maxBodyMb: options.serveMaxBodyMb,
+  });
+
+  // The token is a credential: it appears in this one local startup banner so
+  // the URLs are clickable, but it is never written into error messages.
+  process.stdout.write(`Serving Markdown directory: ${root}\n`);
+  process.stdout.write('Loopback URL (contains the access token, keep it local):\n');
+  process.stdout.write(`  ${server.origin}${server.basePath}/\n`);
+  const entries = await fs.readdir(root, { withFileTypes: true });
+  const documents = entries
+    .filter((entry) => entry.isFile() && SERVE_TEXT_EXTENSIONS.has(path.extname(entry.name).toLowerCase()))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .slice(0, 20);
+  if (documents.length > 0) {
+    process.stdout.write('Documents:\n');
+    for (const entry of documents) {
+      process.stdout.write(`  ${server.origin}${server.basePath}/${encodeURI(entry.name)}\n`);
+    }
+  }
+  process.stdout.write('Press Ctrl+C to stop.\n');
+
+  let closing = false;
+  const onSignal = () => {
+    if (closing) return;
+    closing = true;
+    process.off('SIGINT', onSignal);
+    process.off('SIGTERM', onSignal);
+    server
+      .close()
+      .then(() => process.stdout.write('\nServer stopped.\n'))
+      .finally(() => process.exit(0));
+  };
+  process.on('SIGINT', onSignal);
+  process.on('SIGTERM', onSignal);
 }
 
 async function withTimeout(promise, timeoutMs) {
@@ -1804,6 +2234,12 @@ async function main() {
     }
     if (options.help) {
       process.stdout.write(HELP);
+      return;
+    }
+    // `documd serve` is a long-running loopback server with its own banner and
+    // no browser launch; it bypasses the export pipeline entirely.
+    if (options.serve) {
+      await runServe(options);
       return;
     }
     // Startup banner: the version and homepage are shown when the CLI starts
