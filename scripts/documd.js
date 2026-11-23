@@ -805,7 +805,7 @@ export async function createServeServer(rootDir, options = {}) {
       const method = (request.method || 'GET').toUpperCase();
 
       if (method === 'OPTIONS') {
-        response.writeHead(204, { ...commonHeaders, allow: 'GET, HEAD, PUT, OPTIONS' }).end();
+        response.writeHead(204, { ...commonHeaders, allow: 'GET, HEAD, PUT, OPTIONS', 'content-length': '0' }).end();
         return;
       }
       if (!['GET', 'HEAD', 'PUT'].includes(method)) {
@@ -849,7 +849,10 @@ export async function createServeServer(rootDir, options = {}) {
           'last-modified': stats.mtime.toUTCString(),
         };
         if (request.headers['if-none-match'] === etag) {
-          response.writeHead(304, headers).end();
+          // Explicit zero length: a node:http shim that ends the response body
+          // by framing rather than by the 304 status code (fibjs) would
+          // otherwise wait forever on a body that is never coming.
+          response.writeHead(304, { ...headers, 'content-length': '0' }).end();
           return;
         }
         if (method === 'HEAD') {
@@ -913,7 +916,7 @@ export async function createServeServer(rootDir, options = {}) {
 
       await atomicWriteFile(targetPath, body);
       const newEtag = `"${crypto.createHash('sha256').update(body).digest('hex')}"`;
-      response.writeHead(204, { ...commonHeaders, etag: newEtag }).end();
+      response.writeHead(204, { ...commonHeaders, etag: newEtag, 'content-length': '0' }).end();
     } catch {
       if (!response.headersSent) {
         response.writeHead(500, commonHeaders).end('Internal server error');
