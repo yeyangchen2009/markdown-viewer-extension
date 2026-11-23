@@ -27,6 +27,22 @@ interface SendOptions {
 }
 
 /**
+ * RFC 9110 responses that carry no message body: 1xx/204/304 status codes,
+ * plus any response to a HEAD request. fibjs's node:http compatibility layer
+ * builds no body stream for these (its client sets m_bNoBody and skips the
+ * BodyStream wrapper), so the stream-event bridge never emits 'end' there:
+ * waiting on it hangs the suite. Settle such responses without stream events.
+ */
+function isNoBodyResponse(method: string | undefined, status: number): boolean {
+  return (
+    (method ?? 'GET').toUpperCase() === 'HEAD' ||
+    status === 204 ||
+    status === 304 ||
+    (status >= 100 && status < 200)
+  );
+}
+
+/**
  * node:http request helper (no global fetch, so the suite stays compatible
  * with the fibjs runtime that runs test:unit in CI).
  */
@@ -42,6 +58,15 @@ function send(targetUrl: string, options: SendOptions = {}): Promise<SendResult>
         headers: options.headers,
       },
       (response) => {
+        if (isNoBodyResponse(options.method, response.statusCode ?? 0)) {
+          response.resume();
+          resolve({
+            status: response.statusCode ?? 0,
+            headers: response.headers,
+            body: Buffer.alloc(0),
+          });
+          return;
+        }
         const chunks: Buffer[] = [];
         response.on('data', (chunk: Buffer) => chunks.push(chunk));
         response.on('end', () =>
