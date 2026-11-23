@@ -239,6 +239,21 @@ async function buildRenderViewBundle() {
 async function buildStyles() {
   console.log('📦 Building styles...');
 
+  // KaTeX CSS lists woff2/woff/ttf fallbacks but only woff2 is copied into
+  // fonts/ (see copyResources), so its font URLs must stay external instead
+  // of hitting the .ttf dataurl loader below.
+  const keepKatexFontsExternal = {
+    name: 'keep-katex-fonts-external',
+    setup(build) {
+      build.onResolve({ filter: /\.(woff2?|ttf)(\?|$)/ }, (args) => {
+        if (args.importer && args.importer.split(/[\\/]/).includes('katex')) {
+          return { path: args.path, external: true };
+        }
+        return undefined;
+      });
+    }
+  };
+
   // Create a combined CSS entry point in project root (where paths resolve correctly)
   const combinedCssPath = path.join(projectRoot, '_combined_mobile.css');
   const cssImports = [
@@ -256,10 +271,17 @@ async function buildStyles() {
     outfile: `${DIST_DIR}/styles.css`,
     loader: {
       '.css': 'css',
-      '.eot': 'dataurl'  // KaTeX fonts (small)
+      '.eot': 'dataurl',  // KaTeX fonts (small)
+      // @vscode/codicons declares `src: url("./codicon.ttf?<hash>")`; the
+      // query suffix cannot match an external suffix glob, so without this
+      // loader the styles build fails. It inlines as a data URL, the same
+      // treatment the three JS bundles already give .ttf files.
+      '.ttf': 'dataurl'
     },
-    // Keep font URLs as-is, files are copied separately
-    external: ['*.woff', '*.woff2', '*.ttf'],
+    // Keep font URLs as-is, files are copied separately. KaTeX fallbacks are
+    // externalised by the plugin above; mobile-fonts.css only uses woff2.
+    external: ['*.woff', '*.woff2'],
+    plugins: [keepKatexFontsExternal],
     minify: true
   });
 
