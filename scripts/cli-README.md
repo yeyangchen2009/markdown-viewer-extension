@@ -78,6 +78,63 @@ documd SUMMARY.md --book --format docx   # merged DOCX
 documd SUMMARY.md --book --format pdf    # one page per chapter
 ```
 
+## Loopback server (`documd serve`)
+
+`serve` does not render anything. It is a long-running local file server that
+backs the browser extension's in-place Markdown editing: the extension opens a
+token-namespaced `http://127.0.0.1` URL, renders the text itself, and saves with
+a same-origin `PUT`.
+
+```bash
+documd serve ./notes                     # http://127.0.0.1:4317, random token
+documd serve ./notes --port 8080
+documd serve ./notes --port 0            # pick any free port
+documd serve ./notes --token "$MY_TOKEN" --max-body-mb 32
+```
+
+Startup prints the root, the loopback origin, and the full clickable URL of
+each top-level text file. The token is printed once at startup and never again.
+
+### URL and MIME model
+
+Every route is namespaced under `/__documd/<token>/`, followed by the disk path
+relative to the served root, so document URLs map one-to-one to files.
+`.md`, `.markdown`, `.mdown`, `.mkd` and `.txt` are served as
+`text/plain; charset=utf-8` (the extension's content detector requires it);
+other extensions keep their normal MIME type, so relative images still render.
+No HTML is generated and directory listings are not offered — a directory path
+is a 404.
+
+### Security model
+
+| Layer | Rule |
+|---|---|
+| Bind address | Listens on `127.0.0.1` only; the port is never reachable from the LAN |
+| Token namespace | A wrong or missing token is an indistinguishable 404; the default token is 36 random hex characters (144 bits) |
+| Host check | Every request's `Host` must name a loopback interface with the actual listening port, checked before any filesystem access — this blocks DNS-rebinding |
+| Root confinement | Percent-encoded separators are decoded, then the resolved target must stay inside the root; traversal is refused |
+| Save channel | `PUT` only overwrites an **existing regular file**; it never creates files |
+| Concurrency | `GET` carries a strong `sha256` `ETag`; `PUT` honours `If-Match` and answers `412` when the disk revision moved |
+| Atomic writes | The body lands in a same-directory temp file and is renamed into place, so a crash cannot leave a half-written document |
+| Referrer leakage | Every response carries `referrer-policy: no-referrer` and `cache-control: no-store` |
+
+Status codes form a frozen contract: `204` (saved), `304` (ETag current),
+`403` (bad host / outside root), `404` (no such file, directory, or token),
+`405` (method other than GET/HEAD/PUT/OPTIONS), `412` (stale `If-Match`),
+`413` (body over the limit), `415` (non-text `Content-Type`), `500`.
+
+**Token URLs are bearer credentials.** Anyone who obtains the full URL can read
+and overwrite the served files for the lifetime of the process. Browser history,
+shared shell scrollback and synced tabs retain it: stop the server (Ctrl-C) when
+done, and rely on the random token rather than passing a guessable `--token`.
+
+### Exit behaviour
+
+`0` on Ctrl-C / SIGTERM after the listening socket closes; `1` when the root is
+not a directory, the port is already in use (the message suggests `--port 0`),
+or another startup error occurs. Per-request errors are answered with the status
+codes above and do not stop the process.
+
 ## Exporting figures and images
 
 `--assets <dir>` writes the figures and images a Markdown document shows into
@@ -150,6 +207,9 @@ e.g. when a missing optional image should not stop a batch conversion.
 | `--chrome <path>` | Explicit Chrome/Chromium binary (or `DOCUMD_CHROME_PATH`) |
 | `--browser-arg <flag>` | Extra Chromium flag, repeatable (or `DOCUMD_CHROME_ARGS`) |
 | `--timeout <seconds>` | Render timeout (default 120) |
+| `--port <n>` | `serve`: TCP port, `0` = random free port (default 4317) |
+| `--token <t>` | `serve`: URL namespace token (default: 36 random hex chars) |
+| `--max-body-mb <n>` | `serve`: PUT body ceiling in MiB (default 64) |
 | `-h, --help` | Show help |
 
 ## Browser

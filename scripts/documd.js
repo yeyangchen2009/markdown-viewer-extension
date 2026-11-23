@@ -37,6 +37,18 @@ Render Markdown / diagrams / books with headless Chromium
 Usage:
   documd <input> [<output>] [--format <f>] [options]
   documd <input> --assets <dir> [--kind <k>] [--only <list>]
+  documd serve [root] [--port <n>] [--token <t>] [--max-body-mb <n>]
+
+Loopback server (backs the browser extension's in-place Markdown editing):
+  documd serve ./notes
+  Serves a directory on http://127.0.0.1 only (never the LAN), with every
+  route namespaced under /__documd/<token>/. Markdown/text files are served
+  as text/plain; an authenticated same-origin PUT writes the file back
+  atomically (tmp + rename) after an If-Match conflict check. A wrong token
+  or a non-loopback Host header is refused. No HTML and no directory listing.
+      --port <n>           TCP port, 0 = random free port (default: 4317)
+      --token <t>          URL namespace token (default: 36 hex chars random)
+      --max-body-mb <n>    PUT body ceiling in MiB (default: 64)
 
 The second positional is treated as the output file (pandoc style) when its
 extension is a known output format; the input extension must be a known input
@@ -154,6 +166,14 @@ function isDiagramInput(inputPath) {
   return Boolean(DIAGRAM_EXT_TYPES[path.extname(inputPath).toLowerCase()]);
 }
 
+function parseServePort(value) {
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new Error('--port must be an integer between 0 and 65535 (0 = random port)');
+  }
+  return port;
+}
+
 function inferDiagramType(inputPath) {
   return DIAGRAM_EXT_TYPES[path.extname(inputPath).toLowerCase()] || null;
 }
@@ -259,11 +279,41 @@ export function parseArgs(args) {
       }
       options.timeoutMs = seconds * 1000;
       i += 1;
+    } else if (arg === '--port') {
+      options.servePort = parseServePort(takeValue(args, i, arg));
+      i += 1;
+    } else if (arg === '--token') {
+      options.serveToken = takeValue(args, i, arg);
+      i += 1;
+    } else if (arg === '--max-body-mb') {
+      const mb = Number(takeValue(args, i, arg));
+      if (!Number.isInteger(mb) || mb <= 0) {
+        throw new Error('--max-body-mb must be a positive integer (MiB)');
+      }
+      options.serveMaxBodyMb = mb;
+      i += 1;
     } else if (arg.startsWith('-')) {
       throw new Error(`Unknown option: ${arg}`);
     } else {
       positional.push(arg);
     }
+  }
+
+  // `documd serve [root]` — the long-running loopback file server that backs
+  // the browser extension's same-origin PUT write-back. Parsed before the
+  // pandoc-style positional rules below, which only govern one-shot renders.
+  if (positional[0] === 'serve') {
+    if (options.help || options.version) {
+      return options;
+    }
+    if (positional.length > 2) {
+      throw new Error('serve takes at most one directory argument (usage: documd serve [root] [options])');
+    }
+    options.serve = true;
+    options.serveRoot = positional[1] || '.';
+    options.servePort = options.servePort ?? 4317;
+    options.serveMaxBodyMb = options.serveMaxBodyMb ?? 64;
+    return options;
   }
 
   if (!options.help && !options.version) {
@@ -642,6 +692,313 @@ async function startAssetServer(documentDir) {
     resourceBaseUrl: `${origin}${basePath}/`,
     close: () => new Promise((resolve) => server.close(resolve)),
   };
+}
+
+// Extensions served as UTF-8 text so the browser extension's content
+// detector (.md suffix + text/plain) injects on loopback URLs.
+const SERVE_TEXT_EXTENSIONS = new Set(['.md', '.markdown', '.mdown', '.mkd', '.txt']);
+// The only Host names this loopback server answers. Everything else is a
+// DNS-rebinding attempt and is refused before any filesystem access.
+const SERVE_LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
+
+function serveMimeType(filePath) {
+  if (SERVE_TEXT_EXTENSIONS.has(path.extname(filePath).toLowerCase())) {
+    return 'text/plain; charset=utf-8';
+  }
+  return mimeType(filePath);
+}
+
+/**
+ * DNS-rebinding defence. The Host header must name a loopback interface AND
+ * carry the actual listening port; a missing/malformed header or any other
+ * hostname is rejected. Called first on every request.
+ */
+function isLoopbackHost(request, actualPort) {
+  const hostHeader = request.headers.host;
+  if (!hostHeader) return false;
+  let parsed;
+  try {
+    parsed = new URL(`http://${hostHeader}`);
+  } catch {
+    return false;
+  }
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
+  if (!SERVE_LOOPBACK_HOSTS.has(hostname)) return false;
+  return parsed.port === String(actualPort);
+}
+
+function readRequestBody(request, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    request.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        request.destroy();
+        reject(Object.assign(new Error('Request body too large'), { statusCode: 413 }));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on('end', () => resolve(Buffer.concat(chunks)));
+    request.on('error', reject);
+  });
+}
+
+/**
+ * Same-directory tmp + rename: a crash mid-write leaves the temp file behind,
+ * never a half-written target. The temp name carries pid and random suffix so
+ * concurrent writers cannot collide.
+ */
+async function atomicWriteFile(targetPath, buffer) {
+  const tmpName = `.${path.basename(targetPath)}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  const tmpPath = path.join(path.dirname(targetPath), tmpName);
+  try {
+    await fs.writeFile(tmpPath, buffer);
+    await fs.rename(tmpPath, targetPath);
+  } catch (error) {
+    await fs.rm(tmpPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+/**
+ * Long-running loopback server backing the extension's in-place Markdown
+ * editing. GET/HEAD serve files (text/plain for Markdown) with strong sha256
+ * ETags; PUT writes them back atomically after an If-Match conflict check.
+ * Every route is namespaced under /__documd/<token>/, so a wrong token is
+ * indistinguishable from a missing path. Binds 127.0.0.1 only — there is no
+ * LAN exposure path. No HTML is ever served; the extension renders the text.
+ */
+export async function createServeServer(rootDir, options = {}) {
+  const resolvedRoot = path.resolve(rootDir);
+  const token = options.token || crypto.randomBytes(18).toString('hex');
+  const maxBodyBytes = (options.maxBodyMb ?? 64) * 1024 * 1024;
+  const basePath = `/__documd/${token}`;
+  let actualPort = Number(options.port) || 0;
+
+  const resolveInside = (relativePath) => {
+    // decodeURIComponent normalises encoded separators/dots (%2f, %2e) before
+    // the boundary check, then path.resolve + isWithin confines the target.
+    const target = path.resolve(resolvedRoot, decodeURIComponent(relativePath));
+    return isWithin(resolvedRoot, target) ? target : null;
+  };
+
+  const server = http.createServer(async (request, response) => {
+    const commonHeaders = {
+      'cache-control': 'no-store',
+      'referrer-policy': 'no-referrer',
+    };
+    // Refusals emitted before the request body is consumed must close the
+    // socket afterwards: an unread or Content-Length-short body would poison
+    // the keep-alive connection and hang its next request.
+    const rejectEarly = (status, message, extraHeaders = {}) => {
+      response.writeHead(status, { ...commonHeaders, connection: 'close', ...extraHeaders }).end(message);
+      response.on('finish', () => request.destroy());
+    };
+    try {
+      if (!isLoopbackHost(request, actualPort)) {
+        rejectEarly(403, 'Forbidden host');
+        return;
+      }
+      const url = new URL(request.url || '/', 'http://127.0.0.1');
+      const method = (request.method || 'GET').toUpperCase();
+
+      if (method === 'OPTIONS') {
+        response.writeHead(204, { ...commonHeaders, allow: 'GET, HEAD, PUT, OPTIONS' }).end();
+        return;
+      }
+      if (!['GET', 'HEAD', 'PUT'].includes(method)) {
+        rejectEarly(405, 'Method not allowed', { allow: 'GET, HEAD, PUT, OPTIONS' });
+        return;
+      }
+
+      // Token namespace: an unknown prefix gets a generic 404 (no existence leak).
+      if (!url.pathname.startsWith(`${basePath}/`)) {
+        rejectEarly(404, 'Not found');
+        return;
+      }
+      const targetPath = resolveInside(url.pathname.slice(basePath.length + 1));
+      if (!targetPath) {
+        rejectEarly(403, 'Outside serve root');
+        return;
+      }
+
+      if (method === 'GET' || method === 'HEAD') {
+        let stats;
+        try {
+          stats = await fs.stat(targetPath);
+        } catch (error) {
+          if (error?.code === 'ENOENT') {
+            response.writeHead(404, commonHeaders).end('Not found');
+            return;
+          }
+          throw error;
+        }
+        if (!stats.isFile()) {
+          // No directory listing: a directory path is just a 404.
+          response.writeHead(404, commonHeaders).end('Not found');
+          return;
+        }
+        const data = await fs.readFile(targetPath);
+        const etag = `"${crypto.createHash('sha256').update(data).digest('hex')}"`;
+        const headers = {
+          ...commonHeaders,
+          'content-type': serveMimeType(targetPath),
+          etag,
+          'last-modified': stats.mtime.toUTCString(),
+        };
+        if (request.headers['if-none-match'] === etag) {
+          response.writeHead(304, headers).end();
+          return;
+        }
+        if (method === 'HEAD') {
+          response.writeHead(200, { ...headers, 'content-length': data.length }).end();
+          return;
+        }
+        response.writeHead(200, headers).end(data);
+        return;
+      }
+
+      // PUT — in-place write-back. The target must be an existing regular file
+      // before any content validation, so a missing path is always a 404 no
+      // matter what headers the client sent (the save channel never creates).
+      let stats;
+      try {
+        stats = await fs.stat(targetPath);
+      } catch (error) {
+        if (error?.code === 'ENOENT') {
+          rejectEarly(404, 'Not found');
+          return;
+        }
+        throw error;
+      }
+      if (!stats.isFile()) {
+        rejectEarly(404, 'Not found');
+        return;
+      }
+
+      const contentType = (request.headers['content-type'] || '').toLowerCase();
+      if (contentType && !contentType.startsWith('text/')) {
+        rejectEarly(415, 'Unsupported media type');
+        return;
+      }
+      const contentLength = request.headers['content-length'];
+      if (contentLength !== undefined && Number(contentLength) > maxBodyBytes) {
+        // Reject without consuming the body.
+        rejectEarly(413, 'Request body too large');
+        return;
+      }
+
+      let body;
+      try {
+        body = await readRequestBody(request, maxBodyBytes);
+      } catch (error) {
+        if (error?.statusCode === 413) {
+          rejectEarly(413, 'Request body too large');
+          return;
+        }
+        throw error;
+      }
+
+      // Conflict check against the current on-disk revision (sha256, not mtime,
+      // so clock skew and mtime-preserving editors cannot fool it).
+      const current = await fs.readFile(targetPath);
+      const currentEtag = `"${crypto.createHash('sha256').update(current).digest('hex')}"`;
+      const ifMatch = request.headers['if-match'];
+      if (ifMatch !== undefined && ifMatch !== '*' && ifMatch !== currentEtag) {
+        rejectEarly(412, 'Precondition failed', { etag: currentEtag });
+        return;
+      }
+
+      await atomicWriteFile(targetPath, body);
+      const newEtag = `"${crypto.createHash('sha256').update(body).digest('hex')}"`;
+      response.writeHead(204, { ...commonHeaders, etag: newEtag }).end();
+    } catch {
+      if (!response.headersSent) {
+        response.writeHead(500, commonHeaders).end('Internal server error');
+      } else {
+        response.end();
+      }
+    }
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(actualPort, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    server.close();
+    throw new Error('Unable to determine serve server address');
+  }
+  actualPort = address.port;
+  const origin = `http://127.0.0.1:${actualPort}`;
+  return {
+    origin,
+    basePath,
+    token,
+    port: actualPort,
+    urlFor: (relativePath) => `${origin}${basePath}/${relativePath.split(path.sep).join('/')}`,
+    close: () => new Promise((resolve) => server.close(resolve)),
+  };
+}
+
+async function runServe(options) {
+  const root = path.resolve(options.serveRoot);
+  let stats;
+  try {
+    stats = await fs.stat(root);
+  } catch {
+    throw new Error(`serve root does not exist: ${root}`);
+  }
+  if (!stats.isDirectory()) {
+    throw new Error(`serve root must be a directory: ${root}`);
+  }
+
+  let server;
+  try {
+    server = await createServeServer(root, {
+      port: options.servePort,
+      token: options.serveToken,
+      maxBodyMb: options.serveMaxBodyMb,
+    });
+  } catch (error) {
+    if (error?.code === 'EADDRINUSE') {
+      throw new Error(
+        `port ${options.servePort} is already in use; choose another with --port, or pass --port 0 for a random port`,
+      );
+    }
+    throw error;
+  }
+
+  process.stdout.write(`documd v${CLI_VERSION} serve — loopback Markdown server\n`);
+  process.stdout.write(`Root:   ${root}\n`);
+  process.stdout.write(`Listen: ${server.origin} (127.0.0.1 only)\n`);
+  // The token is printed exactly once at startup so the user can open the URL;
+  // it is never written into per-request logs.
+  process.stdout.write('URLs are token-namespaced. Top-level text files:\n');
+  try {
+    const entries = await fs.readdir(root, { withFileTypes: true });
+    const docs = entries
+      .filter((entry) => entry.isFile() && SERVE_TEXT_EXTENSIONS.has(path.extname(entry.name).toLowerCase()))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    for (const doc of docs) {
+      process.stdout.write(`  ${server.urlFor(doc.name)}\n`);
+    }
+  } catch {
+    // The listing is best-effort; the server is already running without it.
+  }
+
+  let closing = false;
+  const shutdown = async () => {
+    if (closing) return;
+    closing = true;
+    await server.close();
+    process.exit(0);
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
 
 async function withTimeout(promise, timeoutMs) {
@@ -1804,6 +2161,12 @@ async function main() {
     }
     if (options.help) {
       process.stdout.write(HELP);
+      return;
+    }
+    // The loopback server is long-running and never touches headless Chromium,
+    // so it diverges before the render banner and the whole one-shot pipeline.
+    if (options.serve) {
+      await runServe(options);
       return;
     }
     // Startup banner: the version and homepage are shown when the CLI starts
