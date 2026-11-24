@@ -4,138 +4,152 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 
-// TEMPORARY fibjs compatibility probe v16 — delete before merge.
-// v15: a response written inside the handler's synchronous stack settles
-// correctly (T4); anything deferred through setTimeout gets replaced by the
-// framework default response (cl=0). Yet documd's `await fs.readFile` path
-// works. Pin the boundary: microtask, request-event Promise, and native fs
-// Promise as the deferral source, inside async vs plain handlers.
+// TEMPORARY fibjs compatibility probe v17 — delete before merge.
+// v16 proved awaiting request 'data'/'end' events inside an async handler
+// poisons fibjs's response window. The node:http compat layer source is not
+// in the OSS tree, so ask the runtime directly: enumerate the IncomingMessage
+// and ServerResponse surface (own keys, prototype chain, candidate body
+// accessors), try each candidate safely, and dump everything to a file the
+// test process reads back.
 
 function log(label: string, extra = '') {
   console.log(`PROBE ${label}${extra ? ' ' + extra : ''}`);
 }
 
-const PAYLOAD = Buffer.from('probe-body-payload');
+const dumpFile = path.join(os.tmpdir(), 'fibjs-v17-dump.json');
 
-function listen(server: http.Server): Promise<number> {
-  return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      resolve(typeof address === 'object' && address ? address.port : 0);
-    });
-  });
-}
-
-function readBody(request: http.IncomingMessage): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    request.on('data', (c) => chunks.push(c));
-    request.on('end', () => resolve(Buffer.concat(chunks)));
-    request.on('error', reject);
-  });
-}
-
-function makeServer(kind: string, probeFile: string): http.Server {
-  if (kind === 'U1') {
-    // Plain handler, respond from a request 'end' event callback (v12 shape).
-    return http.createServer((request, response) => {
-      request.resume();
-      request.on('end', () => {
-        response.writeHead(200, { 'content-type': 'text/plain' }).end(PAYLOAD);
-      });
-    });
-  }
-  if (kind === 'U2') {
-    // async handler awaiting a request-event Promise.
-    return http.createServer(async (request, response) => {
-      await new Promise((r) => {
-        request.resume();
-        request.on('end', r);
-      });
-      response.writeHead(200, { 'content-type': 'text/plain' }).end(PAYLOAD);
-    });
-  }
-  if (kind === 'U3') {
-    // async handler awaiting a native fs promise (documd GET shape).
-    return http.createServer(async (request, response) => {
-      request.resume();
-      await fs.promises.stat(probeFile);
-      response.writeHead(200, { 'content-type': 'text/plain' }).end(PAYLOAD);
-    });
-  }
-  if (kind === 'U4') {
-    // Full documd PUT shape: event-driven body read, then fs, then respond.
-    return http.createServer(async (request, response) => {
-      await readBody(request);
-      await fs.promises.readFile(probeFile);
-      response.writeHead(200, { 'content-type': 'text/plain' }).end(PAYLOAD);
-    });
-  }
-  // U5: async handler, pure microtask hop, no timer, no event.
-  return http.createServer(async (request, response) => {
-    request.resume();
-    await Promise.resolve();
-    response.writeHead(200, { 'content-type': 'text/plain' }).end(PAYLOAD);
-  });
-}
-
-function bareGet(port: number): Promise<Record<string, unknown>> {
-  return new Promise((resolve) => {
-    const result: Record<string, unknown> = { settled: false };
-    const timer = setTimeout(() => resolve(result), 5000);
-    const request = http.request(
-      { method: 'GET', hostname: '127.0.0.1', port, path: '/doc' },
-      (response) => {
-        log('response', `status=${response.statusCode} cl=${response.headers['content-length']} ct=${response.headers['content-type']}`);
-        const chunks: Buffer[] = [];
-        response.on('data', (chunk) => chunks.push(chunk));
-        response.on('end', () => {
-          clearTimeout(timer);
-          resolve({ settled: true, status: response.statusCode, bytes: Buffer.concat(chunks).length });
-        });
-        response.on('error', (error) => log('response-error', String(error)));
-      },
-    );
-    request.on('error', (error) => {
-      clearTimeout(timer);
-      resolve({ settled: true, via: 'request-error', code: (error as { code?: string }).code });
-    });
-    request.end();
-  });
-}
-
-describe('fibjs probe v16: async boundary hunt', () => {
-  const servers: http.Server[] = [];
-  const ports: Record<string, number> = {};
-  let probeFile = '';
-  before(async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fibjs-v16-'));
-    probeFile = path.join(dir, 'probe.txt');
-    fs.writeFileSync(probeFile, 'x');
-    for (const kind of ['U1', 'U2', 'U3', 'U4', 'U5']) {
-      const server = makeServer(kind, probeFile);
-      servers.push(server);
-      ports[kind] = await listen(server);
+function safeType(value: unknown): string {
+  if (value === null) return 'null';
+  if (value === undefined) return 'undefined';
+  if (Buffer.isBuffer(value)) return `Buffer(${value.length})`;
+  const t = typeof value;
+  if (t === 'object') {
+    try {
+      return `${t}:${(value as object).constructor?.name || 'anonymous'}`;
+    } catch {
+      return `${t}:?`;
     }
-    log('runtime', JSON.stringify({ fibjs: process.versions.fibjs || null, node: process.versions.node }));
-  });
-  after(async () => {
-    log('after-hook enter');
-    await Promise.all(servers.map((s) => new Promise((r) => s.close(() => r()))));
-  });
-
-  const cases = [
-    ['U1', 'plain handler + request-end event respond'],
-    ['U2', 'async handler + request-event Promise'],
-    ['U3', 'async handler + native fs.promises.stat'],
-    ['U4', 'async handler + body event + fs.readFile (documd PUT shape)'],
-    ['U5', 'async handler + pure microtask'],
-  ] as const;
-
-  for (const [kind, desc] of cases) {
-    it(`${kind}: ${desc}`, async () => {
-      log(`case-start ${kind}`);
-      log(`case-outcome ${kind}`, JSON.stringify(await bareGet(ports[kind])));
-    });
   }
+  return t;
+}
+
+function protoChain(obj: unknown): string[] {
+  const out: string[] = [];
+  let cur = obj;
+  for (let i = 0; i < 6 && cur; i += 1) {
+    cur = Object.getPrototypeOf(cur);
+    if (!cur) break;
+    out.push(`${i}:${cur.constructor?.name || 'anonymous'}[${Object.getOwnPropertyNames(cur).slice(0, 40).join(',')}]`);
+  }
+  return out;
+}
+
+describe('fibjs probe v17: runtime API enumeration', () => {
+  let port = 0;
+  let server: http.Server;
+  const dump: Record<string, unknown> = { versions: process.versions };
+
+  before(async () => {
+    server = http.createServer(async (request, response) => {
+      try {
+        dump.requestOwnKeys = Object.getOwnPropertyNames(request);
+        dump.requestProtoChain = protoChain(request);
+        dump.responseOwnKeys = Object.getOwnPropertyNames(response);
+        dump.responseProtoChain = protoChain(response);
+        const candidates = [
+          'body', 'rawBody', 'payload', 'message', 'req', 'request',
+          'blob', 'arrayBuffer', 'text', 'json', 'read', 'readBody',
+          'readable', 'socket', 'stream', 'contentLength', 'headers',
+        ];
+        const probe: Record<string, string> = {};
+        for (const name of candidates) {
+          try {
+            const value = (request as Record<string, unknown>)[name];
+            probe[`typeof.${name}`] = safeType(value);
+          } catch (error) {
+            probe[`typeof.${name}`] = `THROW ${String(error)}`;
+          }
+        }
+        // Candidate invocation: only things that look like body accessors.
+        for (const name of ['blob', 'arrayBuffer', 'text', 'json', 'readBody']) {
+          try {
+            const fn = (request as Record<string, unknown>)[name];
+            if (typeof fn === 'function') {
+              const value = await (fn as () => unknown).call(request);
+              probe[`call.${name}`] = safeType(value);
+            }
+          } catch (error) {
+            probe[`call.${name}`] = `THROW ${String(error && (error as Error).message)}`;
+          }
+        }
+        if ('body' in request) {
+          try {
+            const body = (request as Record<string, unknown>).body;
+            probe['body.inspect'] = safeType(body);
+            if (body && typeof body === 'object') {
+              probe['body.keys'] = Object.getOwnPropertyNames(body).slice(0, 30);
+              const maybeBuffer = (body as { body?: unknown; data?: unknown }).body ?? (body as { data?: unknown }).data;
+              if (maybeBuffer !== undefined) probe['body.body|data'] = safeType(maybeBuffer);
+            }
+          } catch (error) {
+            probe['body.inspect'] = `THROW ${String(error)}`;
+          }
+        }
+        dump.candidateProbe = probe;
+        fs.writeFileSync(dumpFile, JSON.stringify(dump, null, 1));
+        response.writeHead(200, { 'content-type': 'application/json' }).end('dumped');
+      } catch (error) {
+        dump.fatal = String(error);
+        fs.writeFileSync(dumpFile, JSON.stringify(dump, null, 1));
+        response.writeHead(500).end('probe failed');
+      }
+    });
+    port = await new Promise((resolve) => {
+      server.listen(0, '127.0.0.1', () => {
+        const address = server.address();
+        resolve(typeof address === 'object' && address ? address.port : 0);
+      });
+    });
+  });
+
+  after(async () => {
+    await new Promise((r) => server.close(() => r()));
+  });
+
+  it('dumps the node:http object surface from inside the runtime', async () => {
+    const outcome = await new Promise((resolve) => {
+      const timer = setTimeout(() => resolve({ settled: false }), 5000);
+      const request = http.request(
+        { method: 'GET', hostname: '127.0.0.1', port, path: '/probe' },
+        (response) => {
+          response.resume();
+          response.on('end', () => {
+            clearTimeout(timer);
+            resolve({ settled: true, status: response.statusCode });
+          });
+        },
+      );
+      request.on('error', (error) => {
+        clearTimeout(timer);
+        resolve({ settled: true, error: String(error) });
+      });
+      request.end();
+    });
+    log('client-outcome', JSON.stringify(outcome));
+  });
+
+  it('reads back the enumeration dump', () => {
+    if (!fs.existsSync(dumpFile)) {
+      log('dump MISSING');
+      return;
+    }
+    const text = fs.readFileSync(dumpFile, 'utf8');
+    const parsed = JSON.parse(text);
+    log('dump-requestOwnKeys', JSON.stringify(parsed.requestOwnKeys));
+    for (const line of parsed.requestProtoChain || []) log('dump-requestProto', line);
+    log('dump-responseOwnKeys', JSON.stringify(parsed.responseOwnKeys));
+    for (const line of parsed.responseProtoChain || []) log('dump-responseProto', line);
+    log('dump-candidates', JSON.stringify(parsed.candidateProbe, null, 1));
+    if (parsed.fatal) log('dump-fatal', parsed.fatal);
+  });
 });
