@@ -727,17 +727,28 @@ function isLoopbackHost(request, actualPort) {
   return parsed.port === String(actualPort);
 }
 
-function readRequestBody(request, maxBytes) {
+async function readRequestBody(request, maxBytes) {
+  // fibjs's node:http compatibility layer hands the JS handler a native
+  // HttpRequest/Message instead of a Node-style stream. Awaiting data/end
+  // events there leaves the handler's response window: once the handler
+  // awaits an event-driven Promise, the framework emits its own default
+  // response (cl=0, JS headers discarded) and the client never settles. The
+  // native one-shot arrayBuffer() accessor reads the buffered body inside
+  // the window instead. Verified against fibjs 0.38.0-dev (probes v16-v18).
+  if (process.versions.fibjs) {
+    const data = Buffer.from(await request.arrayBuffer());
+    if (data.length > maxBytes) {
+      throw Object.assign(new Error('Request body too large'), { statusCode: 413 });
+    }
+    return data;
+  }
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
     let tooLarge = false;
-    // Keep the stream flowing past the limit instead of destroying it. Under
-    // fibjs the C++ layer buffers the whole body before invoking the JS
-    // handler, so request.destroy() there faults the framework's read state
-    // machine into a 400 whose client never emits end/close and the request
-    // hangs forever. Draining the remainder lets the handler answer a normal
-    // 413 with connection: close on every runtime.
+    // Keep the stream flowing past the limit instead of destroying it, then
+    // answer a normal 413 once the body is drained: a mid-stream destroy
+    // would reset the connection before the error response flushes.
     request.on('data', (chunk) => {
       if (tooLarge) return;
       size += chunk.length;

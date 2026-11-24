@@ -89,11 +89,9 @@ jobs:
           npm run build:mobile
 
       - name: Run fibjs compatibility tests
-        timeout-minutes: 5
-        run: fibjs test/fibjs-probe.test.ts
+        run: npm run test:unit
 
       - name: Run installed-extension E2E (Node.js + Playwright)
-        if: false
         run: npm run test:e2e
         env:
           MV_E2E_ARTIFACT_DIR: test-results/extension-e2e
