@@ -6,6 +6,7 @@ import {
   isAbsoluteFilesystemPath,
   isDocumentRelativeUrl,
   isExternalUrl,
+  isLoopbackHttpUrl,
   isNetworkUrl,
   isSpecialAbsoluteUrl,
   splitPathAndFragment,
@@ -102,5 +103,28 @@ describe('document-url utilities', () => {
     assert.strictEqual(stripUrlQueryAndHash('./notes.md?x=1'), './notes.md?x=1');
     assert.strictEqual(stripUrlQueryAndHash('data:text/plain,what?x=1'), 'data:text/plain,what?x=1');
     assert.strictEqual(stripUrlQueryAndHash(''), '');
+  });
+
+  it('detects loopback http URLs and rejects every other shape', () => {
+    // The three accepted loopback hosts, with port, path, query and hash.
+    assert.strictEqual(isLoopbackHttpUrl('http://127.0.0.1:4317/__documd/token/a.md'), true);
+    assert.strictEqual(isLoopbackHttpUrl('http://localhost:4317/a.md?x=1#frag'), true);
+    assert.strictEqual(isLoopbackHttpUrl('http://[::1]:4317/a.md'), true);
+    // WHATWG URL lowercases the host, so an upper-case local host still matches.
+    assert.strictEqual(isLoopbackHttpUrl('http://LOCALHOST/a.md'), true);
+    // Userinfo cannot change the host the request reaches.
+    assert.strictEqual(isLoopbackHttpUrl('http://evil@127.0.0.1/a.md'), true);
+
+    // Plain http loopback only: the serve factory never speaks https.
+    assert.strictEqual(isLoopbackHttpUrl('https://127.0.0.1/a.md'), false);
+    // Public hosts and look-alike suffixes must not match the exact host set.
+    assert.strictEqual(isLoopbackHttpUrl('http://example.com/a.md'), false);
+    assert.strictEqual(isLoopbackHttpUrl('http://localhost.evil.com/a.md'), false);
+    assert.strictEqual(isLoopbackHttpUrl('http://127.0.0.1.evil.com/a.md'), false);
+    // Non-http schemes, relative URLs and empty input.
+    assert.strictEqual(isLoopbackHttpUrl('file:///tmp/a.md'), false);
+    assert.strictEqual(isLoopbackHttpUrl('a.md'), false);
+    assert.strictEqual(isLoopbackHttpUrl('//127.0.0.1/a.md'), false);
+    assert.strictEqual(isLoopbackHttpUrl(''), false);
   });
 });

@@ -1,4 +1,6 @@
 import { deliverFile } from '../../../../src/utils/file-download';
+import { isLoopbackHttpUrl } from '../../../../src/utils/document-url';
+import { putLoopbackSource } from './loopback-write';
 
 export interface SourceSaveTarget {
   filename: string;
@@ -12,6 +14,8 @@ export interface SourceSaveRequest extends SourceSaveTarget {
   handle: FileSystemFileHandle | null;
   /** Separates in-place Markdown navigation within the same page. */
   documentUrl?: string;
+  /** If-Match guard for a loopback PUT; undefined until the file watcher supplies it. */
+  expectedETag?: string | null;
 }
 
 export const SOURCE_FILE_SAVE_REQUEST_EVENT = 'mv:source-file-save-request';
@@ -100,6 +104,28 @@ function saveThroughMainWorld(request: SourceSaveRequest): Promise<SourceSaveRes
 export async function saveSourceFile(request: SourceSaveRequest): Promise<SourceSaveResult> {
   const pickerWindow = window as FilePickerWindow;
   let handle = request.handle;
+
+  // Loopback write-back comes first: on a documd serve page the background
+  // script injects the MAIN-world writer too, so the ready marker below is set
+  // even here — routing through it would wrongly open a file picker. The
+  // chrome.runtime.id guard confines the branch to the extension's isolated
+  // world (an ordinary loopback web page has no extension context). A failed
+  // PUT rejects and propagates: there is deliberately no download fallback.
+  if (
+    request.writeBack
+    && typeof chrome !== 'undefined'
+    && Boolean(chrome.runtime?.id)
+    && isLoopbackHttpUrl(request.documentUrl ?? '')
+  ) {
+    // The fresh ETag is reconciled by the loopback file watcher in a later
+    // phase; here only the write's success or rejection matters.
+    await putLoopbackSource(
+      request.documentUrl as string,
+      request.content,
+      request.expectedETag,
+    );
+    return { status: 'written', handle: null };
+  }
 
   // Edge can reject a picker invoked from the extension's isolated world. The
   // MAIN-world writer owns local handles for this page and performs the same

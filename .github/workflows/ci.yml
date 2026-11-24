@@ -91,6 +91,11 @@ jobs:
       - name: Run fibjs compatibility tests
         run: npm run test:unit
 
+      # Node-only contracts: they install XHR/Window/handle shims and rely on
+      # extensionless ESM resolution, neither available in the fibjs runner.
+      - name: Run Node.js contract tests
+        run: npm run test:contracts:node
+
       - name: Run installed-extension E2E (Node.js + Playwright)
         run: npm run test:e2e
         env:
