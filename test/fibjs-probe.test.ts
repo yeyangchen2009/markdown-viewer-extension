@@ -1,49 +1,21 @@
+import fs from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 
-// TEMPORARY fibjs compatibility probe v15 — delete before merge.
-// v14 proved the real documd response path settles under fibjs while minimal
-// servers get their headers replaced (cl=0) and never end. Factor hunt with
-// bare GETs on shared long-lived servers, varying one thing at a time:
-// sync vs async handler, Buffer vs string body, header set shape, explicit CL.
+// TEMPORARY fibjs compatibility probe v16 — delete before merge.
+// v15: a response written inside the handler's synchronous stack settles
+// correctly (T4); anything deferred through setTimeout gets replaced by the
+// framework default response (cl=0). Yet documd's `await fs.readFile` path
+// works. Pin the boundary: microtask, request-event Promise, and native fs
+// Promise as the deferral source, inside async vs plain handlers.
 
 function log(label: string, extra = '') {
   console.log(`PROBE ${label}${extra ? ' ' + extra : ''}`);
 }
 
-const PAYLOAD = 'probe-body-payload';
-const SINGLE_HEADERS = { 'content-type': 'text/plain; charset=utf-8' };
-const RICH_HEADERS = {
-  'cache-control': 'no-store',
-  'referrer-policy': 'no-referrer',
-  'content-type': 'text/plain; charset=utf-8',
-  etag: '"deadbeef"',
-  'last-modified': 'Tue, 24 Nov 2026 04:00:00 GMT',
-};
-
-function makeServer(kind: string): http.Server {
-  return http.createServer((request, response) => {
-    const respond = () => {
-      if (kind === 'T1') {
-        response.writeHead(200, SINGLE_HEADERS).end(Buffer.from(PAYLOAD));
-      } else if (kind === 'T2') {
-        response.writeHead(200, SINGLE_HEADERS).end(PAYLOAD);
-      } else if (kind === 'T3') {
-        response.writeHead(200, RICH_HEADERS).end(Buffer.from(PAYLOAD));
-      } else if (kind === 'T4') {
-        response.writeHead(200, SINGLE_HEADERS).end(Buffer.from(PAYLOAD));
-      } else if (kind === 'T5') {
-        response.writeHead(200, { ...SINGLE_HEADERS, 'content-length': Buffer.byteLength(PAYLOAD) }).end(Buffer.from(PAYLOAD));
-      }
-    };
-    if (kind === 'T4') {
-      respond(); // sync handler, answer immediately on the request event
-    } else {
-      // async handler shape: hop a microtask/timer like awaiting fs.readFile
-      setTimeout(respond, 5);
-    }
-  });
-}
+const PAYLOAD = Buffer.from('probe-body-payload');
 
 function listen(server: http.Server): Promise<number> {
   return new Promise((resolve) => {
@@ -54,6 +26,59 @@ function listen(server: http.Server): Promise<number> {
   });
 }
 
+function readBody(request: http.IncomingMessage): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    request.on('data', (c) => chunks.push(c));
+    request.on('end', () => resolve(Buffer.concat(chunks)));
+    request.on('error', reject);
+  });
+}
+
+function makeServer(kind: string, probeFile: string): http.Server {
+  if (kind === 'U1') {
+    // Plain handler, respond from a request 'end' event callback (v12 shape).
+    return http.createServer((request, response) => {
+      request.resume();
+      request.on('end', () => {
+        response.writeHead(200, { 'content-type': 'text/plain' }).end(PAYLOAD);
+      });
+    });
+  }
+  if (kind === 'U2') {
+    // async handler awaiting a request-event Promise.
+    return http.createServer(async (request, response) => {
+      await new Promise((r) => {
+        request.resume();
+        request.on('end', r);
+      });
+      response.writeHead(200, { 'content-type': 'text/plain' }).end(PAYLOAD);
+    });
+  }
+  if (kind === 'U3') {
+    // async handler awaiting a native fs promise (documd GET shape).
+    return http.createServer(async (request, response) => {
+      request.resume();
+      await fs.promises.stat(probeFile);
+      response.writeHead(200, { 'content-type': 'text/plain' }).end(PAYLOAD);
+    });
+  }
+  if (kind === 'U4') {
+    // Full documd PUT shape: event-driven body read, then fs, then respond.
+    return http.createServer(async (request, response) => {
+      await readBody(request);
+      await fs.promises.readFile(probeFile);
+      response.writeHead(200, { 'content-type': 'text/plain' }).end(PAYLOAD);
+    });
+  }
+  // U5: async handler, pure microtask hop, no timer, no event.
+  return http.createServer(async (request, response) => {
+    request.resume();
+    await Promise.resolve();
+    response.writeHead(200, { 'content-type': 'text/plain' }).end(PAYLOAD);
+  });
+}
+
 function bareGet(port: number): Promise<Record<string, unknown>> {
   return new Promise((resolve) => {
     const result: Record<string, unknown> = { settled: false };
@@ -61,7 +86,7 @@ function bareGet(port: number): Promise<Record<string, unknown>> {
     const request = http.request(
       { method: 'GET', hostname: '127.0.0.1', port, path: '/doc' },
       (response) => {
-        log('response', `status=${response.statusCode} cl=${response.headers['content-length']} ct=${response.headers['content-type']} keys=${Object.keys(response.headers).join(',')}`);
+        log('response', `status=${response.statusCode} cl=${response.headers['content-length']} ct=${response.headers['content-type']}`);
         const chunks: Buffer[] = [];
         response.on('data', (chunk) => chunks.push(chunk));
         response.on('end', () => {
@@ -79,12 +104,16 @@ function bareGet(port: number): Promise<Record<string, unknown>> {
   });
 }
 
-describe('fibjs probe v15: response factor hunt', () => {
+describe('fibjs probe v16: async boundary hunt', () => {
   const servers: http.Server[] = [];
   const ports: Record<string, number> = {};
+  let probeFile = '';
   before(async () => {
-    for (const kind of ['T1', 'T2', 'T3', 'T4', 'T5']) {
-      const server = makeServer(kind);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fibjs-v16-'));
+    probeFile = path.join(dir, 'probe.txt');
+    fs.writeFileSync(probeFile, 'x');
+    for (const kind of ['U1', 'U2', 'U3', 'U4', 'U5']) {
+      const server = makeServer(kind, probeFile);
       servers.push(server);
       ports[kind] = await listen(server);
     }
@@ -96,11 +125,11 @@ describe('fibjs probe v15: response factor hunt', () => {
   });
 
   const cases = [
-    ['T1', 'async + Buffer + single headers'],
-    ['T2', 'async + string + single headers'],
-    ['T3', 'async + Buffer + rich headers'],
-    ['T4', 'sync + Buffer + single headers'],
-    ['T5', 'async + Buffer + explicit content-length'],
+    ['U1', 'plain handler + request-end event respond'],
+    ['U2', 'async handler + request-event Promise'],
+    ['U3', 'async handler + native fs.promises.stat'],
+    ['U4', 'async handler + body event + fs.readFile (documd PUT shape)'],
+    ['U5', 'async handler + pure microtask'],
   ] as const;
 
   for (const [kind, desc] of cases) {
