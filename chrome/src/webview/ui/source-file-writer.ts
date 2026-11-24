@@ -30,6 +30,8 @@ interface SourceFileSaveResponse {
 export interface SourceSaveResult {
   status: 'written' | 'downloaded' | 'cancelled';
   handle: FileSystemFileHandle | null;
+  /** Strong ETag of the committed revision, when the loopback PUT returned one. */
+  etag?: string | null;
 }
 
 type FilePickerWindow = Window & {
@@ -117,14 +119,14 @@ export async function saveSourceFile(request: SourceSaveRequest): Promise<Source
     && Boolean(chrome.runtime?.id)
     && isLoopbackHttpUrl(request.documentUrl ?? '')
   ) {
-    // The fresh ETag is reconciled by the loopback file watcher in a later
-    // phase; here only the write's success or rejection matters.
-    await putLoopbackSource(
+    // The fresh ETag is handed back so the loopback file watcher can adopt
+    // the committed revision as its new polling/If-Match baseline.
+    const { etag } = await putLoopbackSource(
       request.documentUrl as string,
       request.content,
       request.expectedETag,
     );
-    return { status: 'written', handle: null };
+    return { status: 'written', handle: null, etag };
   }
 
   // Edge can reject a picker invoked from the extension's isolated world. The

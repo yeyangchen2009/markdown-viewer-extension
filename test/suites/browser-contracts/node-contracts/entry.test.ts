@@ -8,6 +8,8 @@
  * index.js (the fibjs entry) and run exclusively through
  * `npm run test:contracts:node` on a native Node.js + tsx process.
  *
- * The loopback file-watch contracts join this same entry in a later phase.
+ * The loopback file-watch suite shares this entry; neither suite is registered
+ * with the fibjs index.js runner.
  */
 import '../source-file-writer.test.ts';
+import '../loopback-file-watch.test.ts';

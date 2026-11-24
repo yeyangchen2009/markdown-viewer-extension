@@ -46,6 +46,7 @@ import {
   type SourceEditorController,
 } from './ui/source-editor';
 import { saveSourceFile } from './ui/source-file-writer';
+import { startLoopbackFileWatch, type LoopbackWatchController } from './ui/loopback-file-watch';
 
 // Import shared utilities from viewer-host
 import {
@@ -324,7 +325,11 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
   // Initialize file state service (unified across platforms)
   // In workspace/embed mode the iframe URL is stable while dataset.viewerFilePath changes,
   // so always resolve URL dynamically instead of capturing it once.
-  const getActiveDocumentUrl = (): string => getCurrentDocumentUrl();
+  // Standalone in-place Markdown navigation also keeps location.href unchanged.
+  // Remember a loopback chapter explicitly so saving and polling follow the
+  // document on screen rather than the URL of the initially opened chapter.
+  let loopbackNavigatedDocumentUrl: string | null = null;
+  const getActiveDocumentUrl = (): string => loopbackNavigatedDocumentUrl ?? getCurrentDocumentUrl();
 
   // Set initial key for scroll position persistence (used by viewer-host)
   setCurrentFileKey(getActiveDocumentUrl());
@@ -859,6 +864,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
   let sourceEditorSaveStatus = '';
   let sourceFileHandle: FileSystemFileHandle | null = null;
   let pendingExternalContent: string | null = null;
+  let loopbackWatch: LoopbackWatchController | null = null;
   let sourceEditorPreviewTimer: ReturnType<typeof setTimeout> | undefined;
   let sourceEditorPreviewRequestedLine: number | undefined;
   let sourceEditorPreviewRunning = false;
@@ -1768,6 +1774,14 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     const content = sourceEditor.getContent();
     const revision = sourceEditorDocumentRevision;
     const activeUrl = getActiveDocumentUrl();
+    // Reaching this line with a pending conflict means the user just
+    // confirmed overwriting the disk version: skip If-Match for this one
+    // write. Otherwise pin the PUT to the watcher's last-seen ETag so an
+    // unnoticed external edit fails as 412 instead of silently clobbering.
+    const conflictOverwrite = pendingExternalContent !== null && sourceEditorDirty;
+    const expectedETag = !conflictOverwrite && loopbackWatch && isLoopbackHttpUrl(activeUrl)
+      ? loopbackWatch.getETag()
+      : null;
     // file:// keeps its picker/handle flow. A loopback http document (documd
     // serve) gets same-origin PUT write-back — but only on the Chrome surface.
     // Firefox does not bundle the MAIN writer and must keep today's behaviour,
@@ -1786,9 +1800,8 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
         writeBack,
         documentUrl: activeUrl,
         handle: sourceFileHandle,
-        // Wired to the watcher's current ETag in the file-watch phase; null
-        // means "overwrite" for now (no If-Match header).
-        expectedETag: null,
+        // null = overwrite without a guard; a live watcher supplies the ETag.
+        expectedETag,
       });
       // A navigation while the picker/write was open must not apply the old
       // document's save baseline or file handle to the newly opened document.
@@ -1801,6 +1814,12 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
       }
 
       sourceFileHandle = result.handle;
+      if (loopbackWatch && isLoopbackHttpUrl(activeUrl)) {
+        // Adopt the committed revision immediately: the next save's If-Match
+        // and the next poll's baseline must match what we just wrote, and
+        // the poll's own echo is then a plain 304.
+        loopbackWatch.noteSavedState(result.etag ?? null, content);
+      }
       savedRawContent = content;
       sourceEditorDirty = liveRawContent !== savedRawContent;
       pendingExternalContent = null;
@@ -1868,6 +1887,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     sourceEditor?.setActive(false);
     sourceEditor?.setContent(content);
     deactivateSourceEditor();
+    restartLoopbackWatch();
   }
 
   async function executeViewerCommand<T>(
@@ -1975,6 +1995,10 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
       // working for chapters in subdirectories.
       const fileUrl = anchor ? url.split('#')[0] : url;
       const absolutized = absolutizeMarkdownUrls(content, fileUrl);
+      // The address bar intentionally stays on the original chapter. Set this
+      // before renderMarkdown(): resetSourceEditorForDocument() restarts the
+      // loopback watcher from getActiveDocumentUrl() during that render.
+      loopbackNavigatedDocumentUrl = isLoopbackHttpUrl(fileUrl) ? fileUrl : null;
 
       // Point the document service at the chapter so relative reads (SVG
       // plugin, DOCX/print flows) resolve against the chapter directory too.
@@ -2335,6 +2359,35 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     }
   }
 
+  /**
+   * Loopback documents are watched by the isolated world itself: no service
+   * worker, no alarms chain, independent of the file:// tracker above.
+   * Restarting on every document reset covers both in-place navigation paths
+   * (gitbook panel and the markdown-link click interceptor); a non-loopback
+   * document just drops the controller.
+   */
+  function restartLoopbackWatch(): void {
+    stopLoopbackWatch();
+    const activeUrl = getActiveDocumentUrl();
+    if (
+      platform.platform !== 'chrome'
+      || document.documentElement.dataset.viewerFilename
+      || !isLoopbackHttpUrl(activeUrl)
+    ) {
+      return;
+    }
+    loopbackWatch = startLoopbackFileWatch({
+      getUrl: getActiveDocumentUrl,
+      onChange: (content) => { void handleFileChanged(content); },
+      isRelevant: isLoopbackHttpUrl,
+    });
+  }
+
+  function stopLoopbackWatch(): void {
+    loopbackWatch?.stop();
+    loopbackWatch = null;
+  }
+
   window.addEventListener('beforeunload', (event) => {
     if (sourceEditorDirty) {
       event.preventDefault();
@@ -2483,6 +2536,17 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     window.addEventListener('beforeunload', () => {
       stopFileTracking();
     });
+  } else if (
+    platform.platform === 'chrome'
+    && isLoopbackHttpUrl(getActiveDocumentUrl())
+    && !document.documentElement.dataset.viewerFilename
+  ) {
+    // The loopback watch lives in the isolated world; the two protocols are
+    // mutually exclusive. resetSourceEditorForDocument restarts it on
+    // navigation; pagehide additionally covers BFCache unloads.
+    restartLoopbackWatch();
+    window.addEventListener('beforeunload', stopLoopbackWatch);
+    window.addEventListener('pagehide', stopLoopbackWatch);
   }
 }
 
