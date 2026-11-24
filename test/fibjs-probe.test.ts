@@ -74,7 +74,11 @@ describe('fibjs probe v18: native body accessor end to end', () => {
       };
       try {
         if (request.url === '/body-shape') {
-          report({ bodyType: typeof (request as { body?: unknown }).body, bodyValue: String((request as { body?: unknown }).body) });
+          const body = (request as { body?: unknown }).body;
+          report({
+            bodyType: typeof body,
+            bodyConstructor: body && typeof body === 'object' ? (body as { constructor?: { name?: string } }).constructor?.name : null,
+          });
         }
         // Native one-shot accessor, no data/end event listeners.
         const data = Buffer.from(await (request as unknown as { arrayBuffer: () => Promise<ArrayBuffer> }).arrayBuffer());
@@ -109,7 +113,7 @@ describe('fibjs probe v18: native body accessor end to end', () => {
 
   it('2: over-limit body is rejected with a real 413 carrying custom headers', async () => {
     const body = Buffer.alloc(LIMIT + 1024, 0x61);
-    const r = await requestOnce(port, { headers: { 'content-type': 'text/plain' }, body });
+    const r = await requestOnce(port, { path: '/oversize', headers: { 'content-type': 'text/plain' }, body });
     log('case-2', JSON.stringify({ settled: r.settled, status: r.status, xProbe: r.headers?.['x-probe'], code: r.code }));
   });
 
@@ -120,22 +124,22 @@ describe('fibjs probe v18: native body accessor end to end', () => {
     log('case-3', JSON.stringify({ hashHeader: r.headers?.['x-probe-hash'], expectHash, match: r.headers?.['x-probe-hash'] === expectHash }));
   });
 
-  it('4: chunked PUT behaviour under fibjs', async () => {
+  it('4: request.body shape on a body-bearing request', async () => {
+    const r = await requestOnce(port, {
+      path: '/body-shape',
+      headers: { 'content-type': 'text/plain' },
+      body: Buffer.from('shape-check'),
+    });
+    log('case-4', JSON.stringify({ settled: r.settled, status: r.status }));
+  });
+
+  it('5: chunked PUT behaviour under fibjs (known framework defect, runs last)', async () => {
     const body = Buffer.alloc(4096, 0x63);
     const r = await requestOnce(port, {
       headers: { 'content-type': 'text/plain', 'transfer-encoding': 'chunked' },
       body,
       chunked: true,
     });
-    log('case-4', JSON.stringify({ settled: r.settled, status: r.status, code: r.code, data: r.data?.toString().slice(0, 40) }));
-  });
-
-  it('5: request.body shape on a body-bearing request', async () => {
-    const r = await requestOnce(port, {
-      path: '/body-shape',
-      headers: { 'content-type': 'text/plain' },
-      body: Buffer.from('shape-check'),
-    });
-    log('case-5', JSON.stringify({ settled: r.settled, status: r.status }));
+    log('case-5', JSON.stringify({ settled: r.settled, status: r.status, code: r.code, data: r.data?.toString().slice(0, 40) }));
   });
 });
