@@ -131,6 +131,7 @@ describe('documd serve — createServeServer loopback contract', () => {
   });
 
   after(async () => {
+    console.log('PROBE after-hook enter');
     await server?.close();
     fs.rmSync(rootDir, { recursive: true, force: true });
     fs.rmSync(outsideDir, { recursive: true, force: true });
@@ -138,6 +139,7 @@ describe('documd serve — createServeServer loopback contract', () => {
 
   describe('server shape and binding', () => {
     it('exposes origin, token namespace, port and a urlFor helper', () => {
+      console.log('PROBE enter: exposes origin, token namespace, port and a urlFor helper');
       assert.match(server.origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       assert.equal(server.basePath, '/__documd/fixed-test-token');
       assert.equal(server.token, 'fixed-test-token');
@@ -149,6 +151,7 @@ describe('documd serve — createServeServer loopback contract', () => {
     });
 
     it('generates a 36-hex-char random token when none is supplied', async () => {
+      console.log('PROBE enter: generates a 36-hex-char random token when none is supplied');
       const random = await createServeServer(rootDir, { port: 0 });
       try {
         assert.match(random.token, /^[0-9a-f]{36}$/);
@@ -161,6 +164,7 @@ describe('documd serve — createServeServer loopback contract', () => {
 
   describe('GET/HEAD read contract', () => {
     it('serves Markdown as text/plain with no-store, no-referrer and a sha256 ETag', async () => {
+      console.log('PROBE enter: serves Markdown as text/plain with no-store, no-referrer and a sha256 ETag');
       const response = await send(docUrl(server, 'notes.md'));
       assert.equal(response.status, 200);
       assert.equal(response.headers['content-type'], 'text/plain; charset=utf-8');
@@ -172,6 +176,7 @@ describe('documd serve — createServeServer loopback contract', () => {
     });
 
     it('answers 304 without a body when If-None-Match matches the current ETag', async () => {
+      console.log('PROBE enter: answers 304 without a body when If-None-Match matches the current ETag');
       const etag = sha256Etag(ORIGINAL_NOTES);
       const response = await send(docUrl(server, 'notes.md'), {
         headers: { 'if-none-match': etag },
@@ -182,6 +187,7 @@ describe('documd serve — createServeServer loopback contract', () => {
     });
 
     it('serves the full body when If-None-Match is stale', async () => {
+      console.log('PROBE enter: serves the full body when If-None-Match is stale');
       const response = await send(docUrl(server, 'notes.md'), {
         headers: { 'if-none-match': '"stale-etag"' },
       });
@@ -190,6 +196,7 @@ describe('documd serve — createServeServer loopback contract', () => {
     });
 
     it('HEAD returns headers and content-length but no body', async () => {
+      console.log('PROBE enter: HEAD returns headers and content-length but no body');
       const response = await send(docUrl(server, 'notes.md'), { method: 'HEAD' });
       assert.equal(response.status, 200);
       assert.equal(response.body.length, 0);
@@ -199,6 +206,7 @@ describe('documd serve — createServeServer loopback contract', () => {
     });
 
     it('keeps the original MIME table for non-text assets', async () => {
+      console.log('PROBE enter: keeps the original MIME table for non-text assets');
       const response = await send(docUrl(server, 'image.png'));
       assert.equal(response.status, 200);
       assert.equal(response.headers['content-type'], 'image/png');
@@ -206,18 +214,21 @@ describe('documd serve — createServeServer loopback contract', () => {
     });
 
     it('round-trips a path containing Chinese characters and a space', async () => {
+      console.log('PROBE enter: round-trips a path containing Chinese characters and a space');
       const response = await send(docUrl(server, '中文 文档.md'));
       assert.equal(response.status, 200);
       assert.deepEqual(response.body, UNICODE_CONTENT);
     });
 
     it('serves files from nested directories', async () => {
+      console.log('PROBE enter: serves files from nested directories');
       const response = await send(docUrl(server, 'sub/nested.md'));
       assert.equal(response.status, 200);
       assert.deepEqual(response.body, NESTED_CONTENT);
     });
 
     it('returns 404 for a directory, a missing file, and a wrong token namespace', async () => {
+      console.log('PROBE enter: returns 404 for a directory, a missing file, and a wrong token namespace');
       const directory = await send(docUrl(server, 'sub'));
       assert.equal(directory.status, 404);
 
@@ -231,6 +242,7 @@ describe('documd serve — createServeServer loopback contract', () => {
     });
 
     it('decodes percent-encoded dots and then reports a normal missing-file 404', async () => {
+      console.log('PROBE enter: decodes percent-encoded dots and then reports a normal missing-file 404');
       // Proves decodeURIComponent runs before the filesystem lookup: an encoded
       // dot in a non-existent name is a plain ENOENT, not a routing error.
       const response = await send(docUrl(server, 'missing%2emd'));
@@ -240,6 +252,7 @@ describe('documd serve — createServeServer loopback contract', () => {
 
   describe('PUT write-back contract', () => {
     it('writes the body verbatim, answers 204 with the new ETag and leaves no temp file', async () => {
+      console.log('PROBE enter: writes the body verbatim, answers 204 with the new ETag and leaves no temp file');
       const target = path.join(rootDir, 'put-ok.md');
       fs.writeFileSync(target, 'before\n');
       const replacement = Buffer.from('# 新内容\n\r\n第二行 CRLF 保真传\n', 'utf8');
@@ -260,6 +273,7 @@ describe('documd serve — createServeServer loopback contract', () => {
     });
 
     it('accepts a PUT without a Content-Type header', async () => {
+      console.log('PROBE enter: accepts a PUT without a Content-Type header');
       const target = path.join(rootDir, 'put-no-ct.md');
       fs.writeFileSync(target, 'before\n');
       const response = await send(docUrl(server, 'put-no-ct.md'), {
@@ -271,6 +285,7 @@ describe('documd serve — createServeServer loopback contract', () => {
     });
 
     it('honours a matching If-Match and rejects a stale one with 412 without touching disk', async () => {
+      console.log('PROBE enter: honours a matching If-Match and rejects a stale one with 412 without touching disk');
       const target = path.join(rootDir, 'put-precondition.md');
       const initial = Buffer.from('version one\n', 'utf8');
       fs.writeFileSync(target, initial);
@@ -296,6 +311,7 @@ describe('documd serve — createServeServer loopback contract', () => {
     });
 
     it('treats If-Match: * as matching any existing revision', async () => {
+      console.log('PROBE enter: treats If-Match: * as matching any existing revision');
       const target = path.join(rootDir, 'put-star.md');
       fs.writeFileSync(target, 'old\n');
       const response = await send(docUrl(server, 'put-star.md'), {
@@ -308,6 +324,7 @@ describe('documd serve — createServeServer loopback contract', () => {
     });
 
     it('never creates files: PUT to a missing path is 404', async () => {
+      console.log('PROBE enter: never creates files: PUT to a missing path is 404');
       const response = await send(docUrl(server, 'brand-new.md'), {
         method: 'PUT',
         headers: { 'content-type': 'text/plain' },
@@ -318,6 +335,7 @@ describe('documd serve — createServeServer loopback contract', () => {
     });
 
     it('checks target existence before content type or body limits', async () => {
+      console.log('PROBE enter: checks target existence before content type or body limits');
       // Pins the frozen guard order: a missing target is a 404 even when the
       // same request would otherwise fail with 415/413.
       const badType = await send(docUrl(server, 'also-missing.md'), {
@@ -337,6 +355,7 @@ describe('documd serve — createServeServer loopback contract', () => {
     });
 
     it('rejects a non-text Content-Type with 415 and keeps the file intact', async () => {
+      console.log('PROBE enter: rejects a non-text Content-Type with 415 and keeps the file intact');
       const target = path.join(rootDir, 'put-json.md');
       fs.writeFileSync(target, 'keep me\n');
       const response = await send(docUrl(server, 'put-json.md'), {
@@ -349,6 +368,7 @@ describe('documd serve — createServeServer loopback contract', () => {
     });
 
     it('rejects an over-limit Content-Length up front with 413, without consuming the body', async () => {
+      console.log('PROBE enter: rejects an over-limit Content-Length up front with 413, without consuming the body');
       const target = path.join(rootDir, 'put-large-cl.md');
       fs.writeFileSync(target, 'small\n');
       console.log('PROBE 413 before-send');
@@ -364,6 +384,7 @@ describe('documd serve — createServeServer loopback contract', () => {
     });
 
     it('caps a chunked body mid-stream and never writes the overflow', async () => {
+      console.log('PROBE enter: caps a chunked body mid-stream and never writes the overflow');
       const target = path.join(rootDir, 'put-chunked.md');
       fs.writeFileSync(target, 'small\n');
 
@@ -406,6 +427,7 @@ describe('documd serve — createServeServer loopback contract', () => {
     });
 
     it('round-trips a UTF-8 write through a Chinese, space-containing path', async () => {
+      console.log('PROBE enter: round-trips a UTF-8 write through a Chinese, space-containing path');
       const replacement = Buffer.from('# 改后的中文标题\n\n第二行 🚀\n', 'utf8');
       const response = await send(docUrl(server, '中文 文档.md'), {
         method: 'PUT',
@@ -419,12 +441,14 @@ describe('documd serve — createServeServer loopback contract', () => {
 
   describe('method and routing guards', () => {
     it('answers OPTIONS with 204 and the allow header', async () => {
+      console.log('PROBE enter: answers OPTIONS with 204 and the allow header');
       const response = await send(docUrl(server, 'notes.md'), { method: 'OPTIONS' });
       assert.equal(response.status, 204);
       assert.equal(response.headers.allow, 'GET, HEAD, PUT, OPTIONS');
     });
 
     it('rejects other methods with 405 and the allow header', async () => {
+      console.log('PROBE enter: rejects other methods with 405 and the allow header');
       for (const method of ['POST', 'DELETE', 'PATCH']) {
         const response = await send(docUrl(server, 'notes.md'), { method });
         assert.equal(response.status, 405, `${method} must be refused`);
@@ -434,6 +458,7 @@ describe('documd serve — createServeServer loopback contract', () => {
     });
 
     it('refuses every non-loopback or wrong-port Host header before any filesystem access', async () => {
+      console.log('PROBE enter: refuses every non-loopback or wrong-port Host header before any filesystem access');
       // 1. A foreign hostname (the DNS-rebinding shape).
       const foreignHost = await send(docUrl(server, 'notes.md'), {
         headers: { host: 'evil.example' },
@@ -462,6 +487,7 @@ describe('documd serve — createServeServer loopback contract', () => {
     });
 
     it('blocks percent-encoded path traversal at the root boundary (403)', async () => {
+      console.log('PROBE enter: blocks percent-encoded path traversal at the root boundary (403)');
       // WHATWG URL keeps %2f encoded, so the raw segment reaches the server,
       // which decodes it and then confines the target with isWithin.
       const encoded = await send(docUrl(server, 'notes.md'), {
@@ -472,6 +498,7 @@ describe('documd serve — createServeServer loopback contract', () => {
     });
 
     it('neutralises a literal /../ segment via URL normalisation (never 200)', async () => {
+      console.log('PROBE enter: neutralises a literal /../ segment via URL normalisation (never 200)');
       // The client request target keeps the literal dots; the server's URL
       // parser collapses them, which removes the token segment, so the request
       // falls at the namespace check (404) rather than escaping the root.
