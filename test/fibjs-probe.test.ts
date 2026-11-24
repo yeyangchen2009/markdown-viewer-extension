@@ -1,11 +1,16 @@
+import crypto from 'node:crypto';
+import fs from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 
-// TEMPORARY fibjs compatibility probe v2 — delete before merge.
-// Reproduces the two real-suite hang shapes exactly:
-//   1. shared server, connection-reuse sequence 200 -> 304 -> 200 -> HEAD
-//   2. declared Content-Length larger than the bytes actually sent, server
-//      refusing without consuming the body (the CL pre-flight 413 case)
+import { createServeServer } from '../scripts/documd.js';
+
+// TEMPORARY fibjs compatibility probe v3 — delete before merge.
+// Drives the REAL createServeServer with the two cases that hang in the
+// full suite (HEAD, under-declared CL 413) plus a 304 control. The helper is
+// copied verbatim from cli-serve.test.ts so semantics match exactly.
 
 function timed(label: string, work: () => Promise<unknown>): Promise<void> {
   return new Promise((resolve) => {
@@ -30,91 +35,102 @@ function timed(label: string, work: () => Promise<unknown>): Promise<void> {
         if (!settled) {
           settled = true;
           clearTimeout(timer);
-          console.log(`PROBE ${label}: ERROR ${String(error && error.code ? error.code : error)}`);
+          console.log(`PROBE ${label}: ERROR ${String(error && error.message ? error.message : error)}`);
           resolve();
         }
       });
   });
 }
 
-describe('fibjs probe v2: real-suite shapes', () => {
-  const server = http.createServer((req, res) => {
-    if (req.url === '/bad-cl') {
-      // Mirror rejectEarly: refuse before touching the request body.
-      res.writeHead(413, { connection: 'close', 'content-type': 'text/plain' }).end('too large');
-      res.on('finish', () => req.destroy());
-      return;
-    }
-    if (req.method === 'HEAD') {
-      res.writeHead(200, { 'content-length': '12', etag: '"x"' }).end();
-      return;
-    }
-    if (req.url === '/not-modified') {
-      res.writeHead(304, { etag: '"x"' }).end();
-      return;
-    }
-    res.writeHead(200, { 'content-type': 'text/plain', etag: '"x"' }).end('hello-body');
-  });
+function isNoBodyResponse(method: string | undefined, status: number): boolean {
+  return (
+    (method ?? 'GET').toUpperCase() === 'HEAD' ||
+    status === 204 ||
+    status === 304 ||
+    (status >= 100 && status < 200)
+  );
+}
 
-  let port = 0;
+describe('fibjs probe v3: real createServeServer', () => {
+  let rootDir = '';
+  let server: Awaited<ReturnType<typeof createServeServer>> | null = null;
+  let notesUrl = '';
+  const NOTES = Buffer.from('# Notes\n\n初始内容 line one\n', 'utf8');
+
+  function send(relativePath: string, options: { method?: string; headers?: Record<string, string>; body?: Buffer | string } = {}): Promise<{
+    status: number;
+    headers: http.IncomingHttpHeaders;
+    body: Buffer;
+  }> {
+    return new Promise((resolve, reject) => {
+      const target = new URL(`${server!.origin}${server!.basePath}/${relativePath}`);
+      const request = http.request(
+        {
+          method: options.method ?? 'GET',
+          hostname: target.hostname,
+          port: target.port,
+          path: `${target.pathname}${target.search}`,
+          headers: options.headers,
+        },
+        (response) => {
+          if (isNoBodyResponse(options.method, response.statusCode ?? 0)) {
+            response.resume();
+            resolve({ status: response.statusCode ?? 0, headers: response.headers, body: Buffer.alloc(0) });
+            return;
+          }
+          const chunks: Buffer[] = [];
+          response.on('data', (chunk: Buffer) => chunks.push(chunk));
+          response.on('end', () =>
+            resolve({ status: response.statusCode ?? 0, headers: response.headers, body: Buffer.concat(chunks) }),
+          );
+          response.on('error', reject);
+        },
+      );
+      request.on('error', reject);
+      if (options.body !== undefined) request.write(options.body);
+      request.end();
+    });
+  }
+
   before(async () => {
-    await new Promise<void>((resolve) =>
-      server.listen(0, '127.0.0.1', () => {
-        const address = server.address();
-        port = address && typeof address === 'object' ? address.port : 0;
-        resolve();
-      }),
-    );
+    rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fibjs-probe-'));
+    fs.writeFileSync(path.join(rootDir, 'notes.md'), NOTES);
+    server = await createServeServer(rootDir, { port: 0, token: 'fixed-test-token', maxBodyMb: 1 });
+    notesUrl = 'notes.md';
   });
   after(async () => {
-    await new Promise((resolve) => server.close(resolve));
+    await server?.close();
+    fs.rmSync(rootDir, { recursive: true, force: true });
   });
 
-  function shortRequest(method: string, urlPath: string, headers?: Record<string, string>): Promise<unknown> {
-    return new Promise((resolve, reject) => {
-      const req = http.request({ method, hostname: '127.0.0.1', port, path: urlPath, headers }, (res) => {
-        res.resume();
-        resolve({ status: res.statusCode, cl: res.headers['content-length'] });
-      });
-      req.on('error', reject);
-      if (method !== 'GET' && method !== 'HEAD') req.write('x');
-      req.end();
-    });
-  }
-
-  function endEventRequest(method: string, urlPath: string, headers?: Record<string, string>): Promise<unknown> {
-    return new Promise((resolve, reject) => {
-      const req = http.request({ method, hostname: '127.0.0.1', port, path: urlPath, headers }, (res) => {
-        const chunks: Buffer[] = [];
-        res.on('data', (chunk: Buffer) => chunks.push(chunk));
-        res.on('end', () => resolve({ status: res.statusCode, bytes: Buffer.concat(chunks).length }));
-        res.on('error', reject);
-      });
-      req.on('error', reject);
-      if (method !== 'GET' && method !== 'HEAD') req.write('x');
-      req.end();
-    });
-  }
-
-  it('sequence 200 -> 304 -> 200 -> HEAD on one shared server (all short)', () =>
-    timed('seq-head-short', async () => {
-      const r1 = await shortRequest('GET', '/doc');
-      const r2 = await shortRequest('GET', '/not-modified');
-      const r3 = await shortRequest('GET', '/doc');
-      const r4 = await shortRequest('HEAD', '/doc');
-      return [r1, r2, r3, r4];
+  it('304 control (known good)', () =>
+    timed('real-304', async () => {
+      const etag = `"${crypto.createHash('sha256').update(NOTES).digest('hex')}"`;
+      const r = await send(notesUrl, { headers: { 'if-none-match': etag } });
+      return { status: r.status, etag: r.headers.etag };
     }));
 
-  it('HEAD alone again (short, control)', () => timed('head-short', () => shortRequest('HEAD', '/doc')));
+  it('real HEAD case', () =>
+    timed('real-head', async () => {
+      const r = await send(notesUrl, { method: 'HEAD' });
+      return { status: r.status, cl: r.headers['content-length'], etag: r.headers.etag };
+    }));
 
-  it('under-declared-body 413, short style', () =>
-    timed('bad-cl-413-short', () =>
-      shortRequest('PUT', '/bad-cl', { 'content-type': 'text/plain', 'content-length': String(2 * 1024 * 1024) })));
+  it('real under-declared CL 413', () =>
+    timed('real-413', async () => {
+      const target = 'put-large-cl.md';
+      fs.writeFileSync(path.join(rootDir, target), 'small\n');
+      const r = await send(target, {
+        method: 'PUT',
+        headers: { 'content-type': 'text/plain', 'content-length': String(2 * 1024 * 1024) },
+        body: 'x',
+      });
+      return { status: r.status, disk: fs.readFileSync(path.join(rootDir, target), 'utf8') };
+    }));
 
-  it('under-declared-body 413, end-event style', () =>
-    timed('bad-cl-413-end', () =>
-      endEventRequest('PUT', '/bad-cl', { 'content-type': 'text/plain', 'content-length': String(2 * 1024 * 1024) })));
-
-  it('normal keep-alive 200 after the 413 storm (pool recovery)', () =>
-    timed('recovery-200', () => shortRequest('GET', '/doc')));
+  it('ordinary GET after the hard cases (recovery)', () =>
+    timed('real-recovery', async () => {
+      const r = await send(notesUrl);
+      return { status: r.status, bytes: r.body.length };
+    }));
 });
