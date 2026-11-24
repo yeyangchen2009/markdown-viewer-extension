@@ -1,12 +1,13 @@
 import http from 'node:http';
 import { after, before, describe, it } from 'node:test';
 
-// TEMPORARY fibjs compatibility probe — delete before merge.
-// Goal: decide whether the hang is tied to Connection: close responses and
-// whether the 'response' event fires at all for each shape. Every case has a
-// hard 3 s timeout so a hang surfaces as a logged HANG instead of a 60-min stall.
+// TEMPORARY fibjs compatibility probe v2 — delete before merge.
+// Reproduces the two real-suite hang shapes exactly:
+//   1. shared server, connection-reuse sequence 200 -> 304 -> 200 -> HEAD
+//   2. declared Content-Length larger than the bytes actually sent, server
+//      refusing without consuming the body (the CL pre-flight 413 case)
 
-function timed<T>(label: string, work: () => Promise<T>): Promise<void> {
+function timed(label: string, work: () => Promise<unknown>): Promise<void> {
   return new Promise((resolve) => {
     let settled = false;
     const timer = setTimeout(() => {
@@ -36,87 +37,84 @@ function timed<T>(label: string, work: () => Promise<T>): Promise<void> {
   });
 }
 
-describe('fibjs no-body / close connection probe', () => {
+describe('fibjs probe v2: real-suite shapes', () => {
   const server = http.createServer((req, res) => {
-    if (req.method === 'HEAD') {
-      // Let the framework take its native HEAD path (force close, header only).
-      res.writeHead(200, { 'content-length': '12' }).end();
-      return;
-    }
-    if (req.url === '/close-413') {
+    if (req.url === '/bad-cl') {
+      // Mirror rejectEarly: refuse before touching the request body.
       res.writeHead(413, { connection: 'close', 'content-type': 'text/plain' }).end('too large');
       res.on('finish', () => req.destroy());
       return;
     }
-    if (req.url === '/close-200') {
-      res.writeHead(200, { connection: 'close', 'content-type': 'text/plain' }).end('bye');
+    if (req.method === 'HEAD') {
+      res.writeHead(200, { 'content-length': '12', etag: '"x"' }).end();
       return;
     }
-    if (req.url === '/ka-304') {
+    if (req.url === '/not-modified') {
       res.writeHead(304, { etag: '"x"' }).end();
       return;
     }
-    res.writeHead(200, { 'content-type': 'text/plain' }).end('hello-body');
+    res.writeHead(200, { 'content-type': 'text/plain', etag: '"x"' }).end('hello-body');
   });
 
+  let port = 0;
   before(async () => {
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', () => {
+        const address = server.address();
+        port = address && typeof address === 'object' ? address.port : 0;
+        resolve();
+      }),
+    );
   });
   after(async () => {
     await new Promise((resolve) => server.close(resolve));
   });
 
-  function port(): number {
-    const address = server.address();
-    return address && typeof address === 'object' ? address.port : 0;
-  }
-
-  function request(
-    method: string,
-    urlPath: string,
-    settleStyle: 'short' | 'end-event',
-  ): Promise<{ status: number; gotResponseEvent: boolean }> {
+  function shortRequest(method: string, urlPath: string, headers?: Record<string, string>): Promise<unknown> {
     return new Promise((resolve, reject) => {
-      const req = http.request(
-        { method, hostname: '127.0.0.1', port: port(), path: urlPath },
-        (res) => {
-          if (settleStyle === 'short') {
-            res.resume();
-            resolve({ status: res.statusCode ?? 0, gotResponseEvent: true });
-            return;
-          }
-          const chunks: Buffer[] = [];
-          res.on('data', (chunk: Buffer) => chunks.push(chunk));
-          res.on('end', () => resolve({ status: res.statusCode ?? 0, gotResponseEvent: true }));
-          res.on('error', reject);
-        },
-      );
+      const req = http.request({ method, hostname: '127.0.0.1', port, path: urlPath, headers }, (res) => {
+        res.resume();
+        resolve({ status: res.statusCode, cl: res.headers['content-length'] });
+      });
       req.on('error', reject);
+      if (method !== 'GET' && method !== 'HEAD') req.write('x');
       req.end();
     });
   }
 
-  it('keep-alive 200 with body, end-event style (control)', () =>
-    timed('ka-200-end', () => request('GET', '/ka-200', 'end-event')));
+  function endEventRequest(method: string, urlPath: string, headers?: Record<string, string>): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      const req = http.request({ method, hostname: '127.0.0.1', port, path: urlPath, headers }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => resolve({ status: res.statusCode, bytes: Buffer.concat(chunks).length }));
+        res.on('error', reject);
+      });
+      req.on('error', reject);
+      if (method !== 'GET' && method !== 'HEAD') req.write('x');
+      req.end();
+    });
+  }
 
-  it('keep-alive 304, short-circuit style', () =>
-    timed('ka-304-short', () => request('GET', '/ka-304', 'short')));
+  it('sequence 200 -> 304 -> 200 -> HEAD on one shared server (all short)', () =>
+    timed('seq-head-short', async () => {
+      const r1 = await shortRequest('GET', '/doc');
+      const r2 = await shortRequest('GET', '/not-modified');
+      const r3 = await shortRequest('GET', '/doc');
+      const r4 = await shortRequest('HEAD', '/doc');
+      return [r1, r2, r3, r4];
+    }));
 
-  it('HEAD native path, short-circuit style', () =>
-    timed('head-short', () => request('HEAD', '/ka-200', 'short')));
+  it('HEAD alone again (short, control)', () => timed('head-short', () => shortRequest('HEAD', '/doc')));
 
-  it('HEAD native path, end-event style', () =>
-    timed('head-end', () => request('HEAD', '/ka-200', 'end-event')));
+  it('under-declared-body 413, short style', () =>
+    timed('bad-cl-413-short', () =>
+      shortRequest('PUT', '/bad-cl', { 'content-type': 'text/plain', 'content-length': String(2 * 1024 * 1024) })));
 
-  it('Connection: close 200 with body, end-event style', () =>
-    timed('close-200-end', () => request('GET', '/close-200', 'end-event')));
+  it('under-declared-body 413, end-event style', () =>
+    timed('bad-cl-413-end', () =>
+      endEventRequest('PUT', '/bad-cl', { 'content-type': 'text/plain', 'content-length': String(2 * 1024 * 1024) })));
 
-  it('Connection: close 200 with body, short-circuit style', () =>
-    timed('close-200-short', () => request('GET', '/close-200', 'short')));
-
-  it('Connection: close 413 with body + destroy, end-event style', () =>
-    timed('close-413-end', () => request('GET', '/close-413', 'end-event')));
-
-  it('Connection: close 413 with body + destroy, short-circuit style', () =>
-    timed('close-413-short', () => request('GET', '/close-413', 'short')));
+  it('normal keep-alive 200 after the 413 storm (pool recovery)', () =>
+    timed('recovery-200', () => shortRequest('GET', '/doc')));
 });
