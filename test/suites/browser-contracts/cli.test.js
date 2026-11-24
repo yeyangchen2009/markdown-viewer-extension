@@ -192,6 +192,34 @@ describe('CLI output format', () => {  it('defaults markdown input to html', () 
     assert.equal(parseArgs(['--help']).help, true);
   });
 
+  it('parses the serve subcommand before the one-shot input rules', () => {
+    const bare = parseArgs(['serve']);
+    assert.equal(bare.serve, true);
+    assert.equal(bare.serveRoot, '.');
+    assert.equal(bare.servePort, 4317);
+    assert.equal(bare.serveMaxBodyMb, 64);
+    assert.equal(bare.input, undefined, 'serve never requires an input file');
+
+    const withRoot = parseArgs(['serve', './notes', '--port', '0']);
+    assert.equal(withRoot.serve, true);
+    assert.equal(withRoot.serveRoot, './notes');
+    assert.equal(withRoot.servePort, 0, 'port 0 means a random free port');
+
+    const full = parseArgs(['serve', 'docs', '--port', '8080', '--token', 'abc123', '--max-body-mb', '8']);
+    assert.equal(full.servePort, 8080);
+    assert.equal(full.serveToken, 'abc123');
+    assert.equal(full.serveMaxBodyMb, 8);
+  });
+
+  it('rejects malformed serve arguments', () => {
+    assert.throws(() => parseArgs(['serve', 'a', 'b']), /serve takes at most one directory/);
+    assert.throws(() => parseArgs(['serve', '--port', '70000']), /--port must be an integer/);
+    assert.throws(() => parseArgs(['serve', '--port', 'abc']), /--port must be an integer/);
+    assert.throws(() => parseArgs(['serve', '--max-body-mb', '0']), /--max-body-mb must be a positive integer/);
+    assert.throws(() => parseArgs(['serve', '--max-body-mb', '2.5']), /--max-body-mb must be a positive integer/);
+    assert.throws(() => parseArgs(['serve', '--no-such-flag']), /Unknown option: --no-such-flag/);
+  });
+
   it('rejects unknown formats, uninferable outputs and format/input mismatches', () => {
     assert.throws(
       () => parseArgs(['flow.puml', '--format', 'webp']),

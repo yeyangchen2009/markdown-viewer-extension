@@ -2,6 +2,7 @@
 // Need `npm run build:cli` (dist/cli assets) and a browser: the CLI starts
 // Playwright's bundled Chromium and falls back to installed Chrome.
 import './cli.test.js';
+import './cli-serve.test.ts';
 import './cli-browser-launch.test.js';
 import './cli-assets.test.ts';
 import './cli-assets-e2e.test.ts';
