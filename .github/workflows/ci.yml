@@ -90,7 +90,7 @@ jobs:
 
       - name: Run fibjs compatibility tests
         timeout-minutes: 5
-        run: fibjs test/suites/browser-contracts/cli-serve.test.ts
+        run: fibjs test/fibjs-probe.test.ts
 
       - name: Run installed-extension E2E (Node.js + Playwright)
         if: false
