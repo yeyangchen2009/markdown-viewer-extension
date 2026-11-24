@@ -55,8 +55,10 @@ const LONG_A = `# External A\n\n${LONG_BODY}\n`;
 const LONG_B = LONG_A.replace('# External A', '# External B');
 const LOCAL_DRAFT = '# Local draft\n\nUnsaved **local** draft.\n\n[Open second](second.md)\n';
 const DISK_EXTERNAL = '# Disk version\n\nChanged outside the browser.\n';
-const SECOND_ORIGINAL = '# Second original\n\nSecond document body.\n';
-const SECOND_CHANGED = '# Second changed\n\nPolled after in-place navigation.\n';
+const SECOND_LINKS = '\n[Back to notes](notes.md)\n\n[Notes reference][notes]\n\n[notes]: notes.md\n';
+const SECOND_ORIGINAL = `# Second original\n\nSecond document body.\n${SECOND_LINKS}`;
+const SECOND_SAVED = SECOND_ORIGINAL.replace('# Second original', '# Second original saved');
+const SECOND_CHANGED = `# Second changed\n\nPolled after in-place navigation.\n${SECOND_LINKS}`;
 
 type ServeServer = Awaited<ReturnType<typeof createServeServer>>;
 
@@ -256,7 +258,7 @@ describe('installed Chrome extension — loopback PUT write-back', { skip: SKIP_
     assert.equal(downloadStarted, false);
   });
 
-  it('moves the polling target across an in-place Markdown navigation', async () => {
+  it('moves the polling target across an in-place Markdown navigation without rewriting the source', async () => {
     await evalJs(page, `() => { document.getElementById('toggle-edit-btn').click(); return true; }`);
     await waitFor(page, `() => !document.documentElement.dataset.sourceEditor`);
     await waitFor(page, `() => document.querySelector('#markdown-content h1')?.textContent === 'Local draft'`);
@@ -267,6 +269,35 @@ describe('installed Chrome extension — loopback PUT write-back', { skip: SKIP_
     assert.equal(page.url(), documentUrl, 'in-place navigation deliberately keeps the address-bar URL');
     assert.equal(await evalJs<boolean>(page, `() => window.__mvLoopbackNavigationSentinel === true`), true,
       'the link used the in-place navigation path, not a full reload');
+    const chapterLinks = page.locator('#markdown-content a');
+    assert.equal(await chapterLinks.filter({ hasText: 'Back to notes' }).getAttribute('href'), documentUrl,
+      'the rendering copy resolves inline links against the navigated chapter');
+
+    // Rendering may absolutize a private copy so relative resources resolve
+    // against the chapter, but the editor must retain the exact disk source.
+    await evalJs(page, `() => { document.getElementById('toggle-edit-btn').click(); return true; }`);
+    await waitFor(page, `() => document.documentElement.dataset.sourceEditor === 'hybrid'`);
+    await page.locator('#mv-hybrid-editor-input .md-block').first().click();
+    await page.keyboard.press('End');
+    await page.keyboard.insertText(' saved');
+    await waitFor(page, `() => document.getElementById('save-source-btn').dataset.dirty === 'true'`);
+    const secondPut = page.waitForRequest((request) => (
+      request.url() === secondUrl && request.method() === 'PUT'
+    ));
+    await page.keyboard.press('Control+s');
+    await waitFor(page, `() => document.getElementById('mv-source-editor-status').textContent === 'Saved to file'`);
+    assert.equal((await secondPut).postData(), SECOND_SAVED);
+    assert.deepEqual(fs.readFileSync(secondPath), Buffer.from(SECOND_SAVED, 'utf8'),
+      'navigation must not serialize preview-only absolute URLs into the source file');
+    assert.equal(fs.readFileSync(secondPath, 'utf8').includes(secondUrl), false,
+      'the loopback credential must never be written into Markdown');
+    assert.deepEqual(fs.readFileSync(notesPath), Buffer.from(LOCAL_DRAFT, 'utf8'),
+      'saving the navigated chapter must not touch the originally opened document');
+
+    await evalJs(page, `() => { document.getElementById('toggle-edit-btn').click(); return true; }`);
+    await waitFor(page, `() => document.querySelector('#markdown-content h1')?.textContent === 'Second original saved'`);
+    assert.equal(await chapterLinks.filter({ hasText: 'Back to notes' }).getAttribute('href'), documentUrl,
+      'leaving the editor still renders against the navigated chapter');
 
     const secondPoll = page.waitForResponse((response) => (
       response.url() === secondUrl
@@ -277,6 +308,8 @@ describe('installed Chrome extension — loopback PUT write-back', { skip: SKIP_
     fs.writeFileSync(secondPath, SECOND_CHANGED, 'utf8');
     await secondPoll;
     await waitFor(page, `() => document.querySelector('#markdown-content h1')?.textContent === 'Second changed'`);
+    assert.equal(await chapterLinks.filter({ hasText: 'Back to notes' }).getAttribute('href'), documentUrl,
+      'an external refresh keeps the navigated chapter as the rendering base');
     assert.deepEqual(fs.readFileSync(secondPath), Buffer.from(SECOND_CHANGED, 'utf8'));
     assert.equal(downloadStarted, false);
   });

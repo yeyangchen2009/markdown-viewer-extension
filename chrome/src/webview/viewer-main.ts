@@ -870,6 +870,13 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
   let sourceEditorPreviewRunning = false;
   let sourceEditorPreviewQueued = false;
   let sourceEditorPreviewContent = rawContent;
+  // In-place navigation keeps location.href on the original chapter. Rendering
+  // needs absolute resource URLs, but the editor and disk must retain the exact
+  // relative source. Keep that render-only base separate from both source copies.
+  let sourceEditorRenderBaseUrl: string | null = null;
+  const contentForCurrentDocument = (content: string): string => sourceEditorRenderBaseUrl
+    ? absolutizeMarkdownUrls(content, sourceEditorRenderBaseUrl)
+    : content;
   let sourceEditorDocumentRevision = 0;
   let previewScrollRestoreVersion = 0;
 
@@ -1727,7 +1734,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     sourceEditorPreviewRunning = true;
     sourceEditorPreviewQueued = false;
     try {
-      await assembler.updateContent(content, restoreLine);
+      await assembler.updateContent(contentForCurrentDocument(content), restoreLine);
       sourceEditorPreviewContent = content;
     } catch (error) {
       sourceEditorSaveStatus = 'Preview update failed';
@@ -1927,8 +1934,15 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     }
   }
 
-  async function renderMarkdown(content: string, savedScrollLine = 0, anchor?: string): Promise<void> {
+  async function renderMarkdown(
+    content: string,
+    savedScrollLine = 0,
+    anchor?: string,
+    renderBaseUrl?: string,
+  ): Promise<void> {
+    sourceEditorRenderBaseUrl = renderBaseUrl ?? null;
     resetSourceEditorForDocument(content);
+    const renderContent = contentForCurrentDocument(content);
     const restoreLine = typeof savedScrollLine === 'number' && Number.isFinite(savedScrollLine) && savedScrollLine > 0
       ? savedScrollLine
       : undefined;
@@ -1947,7 +1961,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
       lastScrollLine = restoreLine;
     }
 
-    const descriptor = buildViewerDocumentDescriptor(content);
+    const descriptor = buildViewerDocumentDescriptor(renderContent);
     const persistedState = toViewerPersistedState(await getFileState());
     if (persistedState.tocVisible === undefined) {
       persistedState.tocVisible = resolveDefaultTocVisibility(descriptor.containerMode);
@@ -1973,7 +1987,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
       'renderMarkdown.failed',
       () => viewerAssembler.openDocument({
         document: descriptor,
-        content,
+        content: renderContent,
         persistedState,
         targetLine: restoreLine,
         anchor,
@@ -1991,10 +2005,9 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
       // Panel navigation keeps the page URL unchanged (it stays on the
       // SUMMARY page), so relative image/link URLs inside a chapter would
       // resolve against the SUMMARY directory instead of the chapter's own
-      // directory. Absolutize them against the chapter URL so previews keep
-      // working for chapters in subdirectories.
+      // directory. renderMarkdown() absolutizes only the rendering copy; the
+      // authoritative editor source and subsequent saves keep the original bytes.
       const fileUrl = anchor ? url.split('#')[0] : url;
-      const absolutized = absolutizeMarkdownUrls(content, fileUrl);
       // The address bar intentionally stays on the original chapter. Set this
       // before renderMarkdown(): resetSourceEditorForDocument() restarts the
       // loopback watcher from getActiveDocumentUrl() during that render.
@@ -2014,7 +2027,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
       document.title = filename;
 
       // Update page content with new markdown
-      await renderMarkdown(absolutized, undefined, anchor);
+      await renderMarkdown(content, undefined, anchor, fileUrl);
 
       // Save to browser history
       saveToHistory(platform);
@@ -2232,7 +2245,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     await viewerAssembler.reportCurrentLine(scrollLine);
     await executeViewerCommand(
       'fileChanged.failed',
-      () => viewerAssembler.updateContent(newContent, scrollLine),
+      () => viewerAssembler.updateContent(contentForCurrentDocument(newContent), scrollLine),
       {
         hasAdapter: Boolean(markdownViewerAdapter),
         resolvedMode: getCurrentResolvedMode(),
