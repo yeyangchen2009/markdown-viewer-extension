@@ -1,155 +1,141 @@
-import fs from 'node:fs';
+import crypto from 'node:crypto';
 import http from 'node:http';
-import os from 'node:os';
-import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 
-// TEMPORARY fibjs compatibility probe v17 — delete before merge.
-// v16 proved awaiting request 'data'/'end' events inside an async handler
-// poisons fibjs's response window. The node:http compat layer source is not
-// in the OSS tree, so ask the runtime directly: enumerate the IncomingMessage
-// and ServerResponse surface (own keys, prototype chain, candidate body
-// accessors), try each candidate safely, and dump everything to a file the
-// test process reads back.
+// TEMPORARY fibjs compatibility probe v18 — delete before merge.
+// v17 found the compat-layer request is a native fibjs HttpRequest/Message
+// with one-shot body accessors (arrayBuffer/blob/readAll) that work inside the
+// async handler window, unlike data/end events which poison the response.
+// Verify end to end: body fidelity, over-limit 413, UTF-8 bytes, chunked
+// behaviour, and the shape of request.body on a body-bearing request.
 
 function log(label: string, extra = '') {
   console.log(`PROBE ${label}${extra ? ' ' + extra : ''}`);
 }
 
-const dumpFile = path.join(os.tmpdir(), 'fibjs-v17-dump.json');
+const LIMIT = 1024 * 1024;
 
-function safeType(value: unknown): string {
-  if (value === null) return 'null';
-  if (value === undefined) return 'undefined';
-  if (Buffer.isBuffer(value)) return `Buffer(${value.length})`;
-  const t = typeof value;
-  if (t === 'object') {
-    try {
-      return `${t}:${(value as object).constructor?.name || 'anonymous'}`;
-    } catch {
-      return `${t}:?`;
+function listen(server: http.Server): Promise<number> {
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      resolve(typeof address === 'object' && address ? address.port : 0);
+    });
+  });
+}
+
+function requestOnce(
+  port: number,
+  options: { method?: string; path?: string; headers?: Record<string, string>; body?: Buffer; chunked?: boolean },
+): Promise<{ settled: boolean; status?: number; headers?: http.IncomingHttpHeaders; data?: Buffer; code?: string }> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve({ settled: false }), 5000);
+    const req = http.request(
+      {
+        method: options.method ?? 'PUT',
+        hostname: '127.0.0.1',
+        port,
+        path: options.path ?? '/doc',
+        headers: options.headers,
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on('data', (c) => chunks.push(c));
+        response.on('end', () => {
+          clearTimeout(timer);
+          resolve({ settled: true, status: response.statusCode, headers: response.headers, data: Buffer.concat(chunks) });
+        });
+        response.on('error', (error) => log('client-response-error', String(error)));
+      },
+    );
+    req.on('error', (error) => {
+      clearTimeout(timer);
+      resolve({ settled: true, code: (error as { code?: string }).code });
+    });
+    if (options.chunked && options.body) {
+      for (let i = 0; i < options.body.length; i += 512) req.write(options.body.subarray(i, i + 512));
+      req.end();
+    } else if (options.body) {
+      req.end(options.body);
+    } else {
+      req.end();
     }
-  }
-  return t;
+  });
 }
 
-function protoChain(obj: unknown): string[] {
-  const out: string[] = [];
-  let cur = obj;
-  for (let i = 0; i < 6 && cur; i += 1) {
-    cur = Object.getPrototypeOf(cur);
-    if (!cur) break;
-    out.push(`${i}:${cur.constructor?.name || 'anonymous'}[${Object.getOwnPropertyNames(cur).slice(0, 40).join(',')}]`);
-  }
-  return out;
-}
-
-describe('fibjs probe v17: runtime API enumeration', () => {
+describe('fibjs probe v18: native body accessor end to end', () => {
   let port = 0;
   let server: http.Server;
-  const dump: Record<string, unknown> = { versions: process.versions };
 
   before(async () => {
     server = http.createServer(async (request, response) => {
+      const report = (patch: Record<string, unknown>) => {
+        log('server-report', JSON.stringify(patch));
+      };
       try {
-        dump.requestOwnKeys = Object.getOwnPropertyNames(request);
-        dump.requestProtoChain = protoChain(request);
-        dump.responseOwnKeys = Object.getOwnPropertyNames(response);
-        dump.responseProtoChain = protoChain(response);
-        const candidates = [
-          'body', 'rawBody', 'payload', 'message', 'req', 'request',
-          'blob', 'arrayBuffer', 'text', 'json', 'read', 'readBody',
-          'readable', 'socket', 'stream', 'contentLength', 'headers',
-        ];
-        const probe: Record<string, string> = {};
-        for (const name of candidates) {
-          try {
-            const value = (request as Record<string, unknown>)[name];
-            probe[`typeof.${name}`] = safeType(value);
-          } catch (error) {
-            probe[`typeof.${name}`] = `THROW ${String(error)}`;
+        if (request.url === '/body-shape') {
+          report({ bodyType: typeof (request as { body?: unknown }).body, bodyValue: String((request as { body?: unknown }).body) });
+        }
+        // Native one-shot accessor, no data/end event listeners.
+        const data = Buffer.from(await (request as unknown as { arrayBuffer: () => Promise<ArrayBuffer> }).arrayBuffer());
+        if (request.url === '/oversize') {
+          if (data.length > LIMIT) {
+            response.writeHead(413, { connection: 'close', 'x-probe': 'rejected' }).end('too large');
+            return;
           }
         }
-        // Candidate invocation: only things that look like body accessors.
-        for (const name of ['blob', 'arrayBuffer', 'text', 'json', 'readBody']) {
-          try {
-            const fn = (request as Record<string, unknown>)[name];
-            if (typeof fn === 'function') {
-              const value = await (fn as () => unknown).call(request);
-              probe[`call.${name}`] = safeType(value);
-            }
-          } catch (error) {
-            probe[`call.${name}`] = `THROW ${String(error && (error as Error).message)}`;
-          }
-        }
-        if ('body' in request) {
-          try {
-            const body = (request as Record<string, unknown>).body;
-            probe['body.inspect'] = safeType(body);
-            if (body && typeof body === 'object') {
-              probe['body.keys'] = Object.getOwnPropertyNames(body).slice(0, 30);
-              const maybeBuffer = (body as { body?: unknown; data?: unknown }).body ?? (body as { data?: unknown }).data;
-              if (maybeBuffer !== undefined) probe['body.body|data'] = safeType(maybeBuffer);
-            }
-          } catch (error) {
-            probe['body.inspect'] = `THROW ${String(error)}`;
-          }
-        }
-        dump.candidateProbe = probe;
-        fs.writeFileSync(dumpFile, JSON.stringify(dump, null, 1));
-        response.writeHead(200, { 'content-type': 'application/json' }).end('dumped');
+        const digest = crypto.createHash('sha256').update(data).digest('hex').slice(0, 12);
+        response
+          .writeHead(200, { 'content-type': 'text/plain', 'x-probe-length': String(data.length), 'x-probe-hash': digest })
+          .end(Buffer.from(`got ${data.length} ${digest}`));
       } catch (error) {
-        dump.fatal = String(error);
-        fs.writeFileSync(dumpFile, JSON.stringify(dump, null, 1));
-        response.writeHead(500).end('probe failed');
+        log('server-throw', String(error));
+        response.writeHead(500, { connection: 'close' }).end(`probe error: ${String(error)}`);
       }
     });
-    port = await new Promise((resolve) => {
-      server.listen(0, '127.0.0.1', () => {
-        const address = server.address();
-        resolve(typeof address === 'object' && address ? address.port : 0);
-      });
-    });
+    port = await listen(server);
+    log('runtime', JSON.stringify({ fibjs: process.versions.fibjs || null, node: process.versions.node }));
   });
 
   after(async () => {
     await new Promise((r) => server.close(() => r()));
   });
 
-  it('dumps the node:http object surface from inside the runtime', async () => {
-    const outcome = await new Promise((resolve) => {
-      const timer = setTimeout(() => resolve({ settled: false }), 5000);
-      const request = http.request(
-        { method: 'GET', hostname: '127.0.0.1', port, path: '/probe' },
-        (response) => {
-          response.resume();
-          response.on('end', () => {
-            clearTimeout(timer);
-            resolve({ settled: true, status: response.statusCode });
-          });
-        },
-      );
-      request.on('error', (error) => {
-        clearTimeout(timer);
-        resolve({ settled: true, error: String(error) });
-      });
-      request.end();
-    });
-    log('client-outcome', JSON.stringify(outcome));
+  it('1: small Content-Length PUT round-trips with headers intact', async () => {
+    const body = Buffer.from('hello fibjs compat\n', 'utf8');
+    const r = await requestOnce(port, { headers: { 'content-type': 'text/plain' }, body });
+    log('case-1', JSON.stringify({ ...r, headers: r.headers && { 'x-probe-length': r.headers['x-probe-length'], 'x-probe-hash': r.headers['x-probe-hash'] }, data: r.data?.toString() }));
   });
 
-  it('reads back the enumeration dump', () => {
-    if (!fs.existsSync(dumpFile)) {
-      log('dump MISSING');
-      return;
-    }
-    const text = fs.readFileSync(dumpFile, 'utf8');
-    const parsed = JSON.parse(text);
-    log('dump-requestOwnKeys', JSON.stringify(parsed.requestOwnKeys));
-    for (const line of parsed.requestProtoChain || []) log('dump-requestProto', line);
-    log('dump-responseOwnKeys', JSON.stringify(parsed.responseOwnKeys));
-    for (const line of parsed.responseProtoChain || []) log('dump-responseProto', line);
-    log('dump-candidates', JSON.stringify(parsed.candidateProbe, null, 1));
-    if (parsed.fatal) log('dump-fatal', parsed.fatal);
+  it('2: over-limit body is rejected with a real 413 carrying custom headers', async () => {
+    const body = Buffer.alloc(LIMIT + 1024, 0x61);
+    const r = await requestOnce(port, { headers: { 'content-type': 'text/plain' }, body });
+    log('case-2', JSON.stringify({ settled: r.settled, status: r.status, xProbe: r.headers?.['x-probe'], code: r.code }));
+  });
+
+  it('3: UTF-8 body bytes survive intact', async () => {
+    const body = Buffer.from('# 中文标题\n\r\n第二行 CRLF\n', 'utf8');
+    const expectHash = crypto.createHash('sha256').update(body).digest('hex').slice(0, 12);
+    const r = await requestOnce(port, { headers: { 'content-type': 'text/plain' }, body });
+    log('case-3', JSON.stringify({ hashHeader: r.headers?.['x-probe-hash'], expectHash, match: r.headers?.['x-probe-hash'] === expectHash }));
+  });
+
+  it('4: chunked PUT behaviour under fibjs', async () => {
+    const body = Buffer.alloc(4096, 0x63);
+    const r = await requestOnce(port, {
+      headers: { 'content-type': 'text/plain', 'transfer-encoding': 'chunked' },
+      body,
+      chunked: true,
+    });
+    log('case-4', JSON.stringify({ settled: r.settled, status: r.status, code: r.code, data: r.data?.toString().slice(0, 40) }));
+  });
+
+  it('5: request.body shape on a body-bearing request', async () => {
+    const r = await requestOnce(port, {
+      path: '/body-shape',
+      headers: { 'content-type': 'text/plain' },
+      body: Buffer.from('shape-check'),
+    });
+    log('case-5', JSON.stringify({ settled: r.settled, status: r.status }));
   });
 });
