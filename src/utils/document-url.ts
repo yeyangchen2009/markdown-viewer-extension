@@ -145,3 +145,35 @@ export function stripUrlQueryAndHash(url: string): string {
   const cut = url.search(/[?#]/);
   return cut < 0 ? url : url.slice(0, cut);
 }
+
+/**
+ * Hosts that always name the local machine. The serve factory only binds
+ * IPv4 loopback, so the list stays narrow: the whole 127/8 range and other
+ * loopback notations are deliberately not treated as safe.
+ */
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
+
+/**
+ * True when url is an http URL targeting the local loopback interface.
+ *
+ * Pure predicate (no browser API, no network), safe to bundle into every
+ * surface. https is excluded because the local documd serve factory only
+ * speaks plain http. WHATWG URL lowercases the host and strips userinfo, so
+ * `localhost.evil.com` and credential-bearing URLs cannot sneak past the
+ * exact-set match. IPv6 hosts carry square brackets in `.hostname`, which are
+ * removed before the lookup. A query/hash never affects the result.
+ */
+export function isLoopbackHttpUrl(url: string): boolean {
+  if (!url) return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'http:') {
+    return false;
+  }
+  const host = parsed.hostname.replace(/^\[|\]$/g, '');
+  return LOOPBACK_HOSTS.has(host);
+}

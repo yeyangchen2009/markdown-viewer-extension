@@ -18,7 +18,7 @@ import { isOpenapiFile } from '../../../src/utils/openapi';
 import { getFileType } from '../../../src/utils/file-wrapper';
 import { setSourceViewActive } from '../../../src/core/viewer/source-view';
 import { deliverFile } from '../../../src/utils/file-download';
-import { stripUrlQueryAndHash } from '../../../src/utils/document-url';
+import { isLoopbackHttpUrl, stripUrlQueryAndHash } from '../../../src/utils/document-url';
 import { LAYOUT_MAX_WIDTHS } from '../../../src/ui/layout-presets';
 import { initSlidevViewer } from '../../../src/slidev/slidev-viewer';
 import { getWebExtensionApi } from '../../../src/utils/platform-info';
@@ -1767,7 +1767,13 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
 
     const content = sourceEditor.getContent();
     const revision = sourceEditorDocumentRevision;
-    const writeBack = getActiveDocumentUrl().startsWith('file://');
+    const activeUrl = getActiveDocumentUrl();
+    // file:// keeps its picker/handle flow. A loopback http document (documd
+    // serve) gets same-origin PUT write-back — but only on the Chrome surface.
+    // Firefox does not bundle the MAIN writer and must keep today's behaviour,
+    // so the platform gate keeps its path byte-for-byte unchanged.
+    const writeBack = activeUrl.startsWith('file://')
+      || (platform.platform === 'chrome' && isLoopbackHttpUrl(activeUrl));
     liveRawContent = content;
     sourceEditorSaving = true;
     sourceEditorSaveStatus = writeBack ? 'Saving to original file…' : 'Saving a copy…';
@@ -1778,8 +1784,11 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
         ...getCurrentSaveTarget(),
         content,
         writeBack,
-        documentUrl: getActiveDocumentUrl(),
+        documentUrl: activeUrl,
         handle: sourceFileHandle,
+        // Wired to the watcher's current ETag in the file-watch phase; null
+        // means "overwrite" for now (no If-Match header).
+        expectedETag: null,
       });
       // A navigation while the picker/write was open must not apply the old
       // document's save baseline or file handle to the newly opened document.
