@@ -731,17 +731,30 @@ function readRequestBody(request, maxBytes) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
+    let tooLarge = false;
+    // Keep the stream flowing past the limit instead of destroying it. Under
+    // fibjs the C++ layer buffers the whole body before invoking the JS
+    // handler, so request.destroy() there faults the framework's read state
+    // machine into a 400 whose client never emits end/close and the request
+    // hangs forever. Draining the remainder lets the handler answer a normal
+    // 413 with connection: close on every runtime.
     request.on('data', (chunk) => {
+      if (tooLarge) return;
       size += chunk.length;
       if (size > maxBytes) {
-        request.destroy();
+        tooLarge = true;
+        chunks.length = 0;
         reject(Object.assign(new Error('Request body too large'), { statusCode: 413 }));
         return;
       }
       chunks.push(chunk);
     });
-    request.on('end', () => resolve(Buffer.concat(chunks)));
-    request.on('error', reject);
+    request.on('end', () => {
+      if (!tooLarge) resolve(Buffer.concat(chunks));
+    });
+    request.on('error', (error) => {
+      if (!tooLarge) reject(error);
+    });
   });
 }
 
