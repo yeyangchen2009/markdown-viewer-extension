@@ -1,20 +1,48 @@
-import fs from 'node:fs';
 import http from 'node:http';
-import os from 'node:os';
-import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 
-import { createServeServer } from '../scripts/documd.js';
-
-// TEMPORARY fibjs compatibility probe v14 — delete before merge.
-// v13 ruled out explicit Content-Length: every minimal-server response arrives
-// with headers defaulted (cl=0, conn/te undefined) and no body 'end'. Yet the
-// real documd server in v4 settled serial GETs fine. Remaining variables:
-// sync vs async request handler, bare GET vs header-carrying GET, shared long
-// lived server vs per-case server. Print the FULL header set this time.
+// TEMPORARY fibjs compatibility probe v15 — delete before merge.
+// v14 proved the real documd response path settles under fibjs while minimal
+// servers get their headers replaced (cl=0) and never end. Factor hunt with
+// bare GETs on shared long-lived servers, varying one thing at a time:
+// sync vs async handler, Buffer vs string body, header set shape, explicit CL.
 
 function log(label: string, extra = '') {
   console.log(`PROBE ${label}${extra ? ' ' + extra : ''}`);
+}
+
+const PAYLOAD = 'probe-body-payload';
+const SINGLE_HEADERS = { 'content-type': 'text/plain; charset=utf-8' };
+const RICH_HEADERS = {
+  'cache-control': 'no-store',
+  'referrer-policy': 'no-referrer',
+  'content-type': 'text/plain; charset=utf-8',
+  etag: '"deadbeef"',
+  'last-modified': 'Tue, 24 Nov 2026 04:00:00 GMT',
+};
+
+function makeServer(kind: string): http.Server {
+  return http.createServer((request, response) => {
+    const respond = () => {
+      if (kind === 'T1') {
+        response.writeHead(200, SINGLE_HEADERS).end(Buffer.from(PAYLOAD));
+      } else if (kind === 'T2') {
+        response.writeHead(200, SINGLE_HEADERS).end(PAYLOAD);
+      } else if (kind === 'T3') {
+        response.writeHead(200, RICH_HEADERS).end(Buffer.from(PAYLOAD));
+      } else if (kind === 'T4') {
+        response.writeHead(200, SINGLE_HEADERS).end(Buffer.from(PAYLOAD));
+      } else if (kind === 'T5') {
+        response.writeHead(200, { ...SINGLE_HEADERS, 'content-length': Buffer.byteLength(PAYLOAD) }).end(Buffer.from(PAYLOAD));
+      }
+    };
+    if (kind === 'T4') {
+      respond(); // sync handler, answer immediately on the request event
+    } else {
+      // async handler shape: hop a microtask/timer like awaiting fs.readFile
+      setTimeout(respond, 5);
+    }
+  });
 }
 
 function listen(server: http.Server): Promise<number> {
@@ -26,27 +54,21 @@ function listen(server: http.Server): Promise<number> {
   });
 }
 
-function bareGet(port: number, withHeaders: boolean, reqPath = '/doc'): Promise<Record<string, unknown>> {
+function bareGet(port: number): Promise<Record<string, unknown>> {
   return new Promise((resolve) => {
     const result: Record<string, unknown> = { settled: false };
     const timer = setTimeout(() => resolve(result), 5000);
     const request = http.request(
-      {
-        method: 'GET',
-        hostname: '127.0.0.1',
-        port,
-        path: reqPath,
-        headers: withHeaders ? { 'content-type': 'text/plain', 'content-length': '0' } : undefined,
-      },
+      { method: 'GET', hostname: '127.0.0.1', port, path: '/doc' },
       (response) => {
-        log('bareGet-response', `status=${response.statusCode} headers=${JSON.stringify(response.headers)}`);
+        log('response', `status=${response.statusCode} cl=${response.headers['content-length']} ct=${response.headers['content-type']} keys=${Object.keys(response.headers).join(',')}`);
         const chunks: Buffer[] = [];
         response.on('data', (chunk) => chunks.push(chunk));
         response.on('end', () => {
           clearTimeout(timer);
           resolve({ settled: true, status: response.statusCode, bytes: Buffer.concat(chunks).length });
         });
-        response.on('error', (error) => log('bareGet-response-error', String(error)));
+        response.on('error', (error) => log('response-error', String(error)));
       },
     );
     request.on('error', (error) => {
@@ -57,61 +79,34 @@ function bareGet(port: number, withHeaders: boolean, reqPath = '/doc'): Promise<
   });
 }
 
-describe('fibjs probe v14: handler shape and request shape quadrant', () => {
-  let syncPort = 0;
-  let asyncPort = 0;
-  let realServer: Awaited<ReturnType<typeof createServeServer>> | null = null;
-  let rootDir = '';
-  const syncServer = http.createServer((request, response) => {
-    request.resume();
-    request.on('end', () => {
-      response.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' }).end('sync-payload');
-    });
-  });
-  const asyncServer = http.createServer(async (request, response) => {
-    await new Promise((r) => {
-      request.resume();
-      request.on('end', r);
-    });
-    response.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' }).end('async-payload');
-  });
-
+describe('fibjs probe v15: response factor hunt', () => {
+  const servers: http.Server[] = [];
+  const ports: Record<string, number> = {};
   before(async () => {
-    syncPort = await listen(syncServer);
-    asyncPort = await listen(asyncServer);
-    rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fibjs-v14-'));
-    fs.writeFileSync(path.join(rootDir, 'notes.md'), 'real-server-payload\n');
-    realServer = await createServeServer(rootDir, { port: 0, token: 'fixed-test-token' });
+    for (const kind of ['T1', 'T2', 'T3', 'T4', 'T5']) {
+      const server = makeServer(kind);
+      servers.push(server);
+      ports[kind] = await listen(server);
+    }
     log('runtime', JSON.stringify({ fibjs: process.versions.fibjs || null, node: process.versions.node }));
   });
-
   after(async () => {
     log('after-hook enter');
-    await new Promise((r) => syncServer.close(() => r()));
-    await new Promise((r) => asyncServer.close(() => r()));
-    await realServer?.close();
-    fs.rmSync(rootDir, { recursive: true, force: true });
+    await Promise.all(servers.map((s) => new Promise((r) => s.close(() => r()))));
   });
 
-  it('1: bare GET on shared sync server', async () => {
-    log('case-start 1');
-    log('case-outcome 1', JSON.stringify(await bareGet(syncPort, false)));
-  });
+  const cases = [
+    ['T1', 'async + Buffer + single headers'],
+    ['T2', 'async + string + single headers'],
+    ['T3', 'async + Buffer + rich headers'],
+    ['T4', 'sync + Buffer + single headers'],
+    ['T5', 'async + Buffer + explicit content-length'],
+  ] as const;
 
-  it('2: bare GET on shared async server', async () => {
-    log('case-start 2');
-    log('case-outcome 2', JSON.stringify(await bareGet(asyncPort, false)));
-  });
-
-  it('3: bare GET on the real createServeServer', async () => {
-    log('case-start 3');
-    const u = new URL(`${realServer!.origin}${realServer!.basePath}/notes.md`);
-    const outcome = await bareGet(Number(u.port), false, u.pathname);
-    log('case-outcome 3', JSON.stringify({ ...outcome, path: u.pathname }));
-  });
-
-  it('4: header-carrying GET on shared sync server', async () => {
-    log('case-start 4');
-    log('case-outcome 4', JSON.stringify(await bareGet(syncPort, true)));
-  });
+  for (const [kind, desc] of cases) {
+    it(`${kind}: ${desc}`, async () => {
+      log(`case-start ${kind}`);
+      log(`case-outcome ${kind}`, JSON.stringify(await bareGet(ports[kind])));
+    });
+  }
 });
