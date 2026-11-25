@@ -823,8 +823,11 @@ body.remark-panel-open.toc-position-right #markdown-wrapper {
    Platforms only add the class(es) + map their theme variables — no per-
    platform style sheets. */
 .mv-embed #page-header,
-.mv-embed #toolbar,
 .mv-embed #reader-controls {
+  display: none !important;
+}
+
+.mv-embed #toolbar {
   display: none !important;
 }
 
