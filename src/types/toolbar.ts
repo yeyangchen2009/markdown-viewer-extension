@@ -121,6 +121,8 @@ export interface ToolbarManagerInstance {
   setSourceToggleState: (state: { supported: boolean; sourceMode: boolean }) => void;
   /** Per-document source-editor availability, dirty state and save feedback. */
   setEditState: (state: { supported: boolean; active: boolean; dirty: boolean; saving: boolean; status?: string }) => void;
+  /** Project the session's requested TOC state onto the floating reader controls. */
+  setReaderControlsOpen: (open: boolean) => void;
   /** Show/hide the layout (width) control — hidden while code view is active. */
   setLayoutControlVisible: (visible: boolean) => void;
 }

@@ -366,7 +366,7 @@ describe('installed Chromium extension — hybrid reading continuity', { skip: S
     assert.ok(exited.visible, 'the edited reading block remains visible after leaving hybrid');
   });
 
-  it('applies normal, fullscreen and narrow widths in the toolbar cycle', async () => {
+  it('starts fullscreen and applies normal, fullscreen and narrow widths in the toolbar cycle', async () => {
     await page.setViewportSize({ width: 1600, height: 1000 });
     const document = makeLongDocument('Middle layout anchor');
     await openDocument(document);
@@ -378,6 +378,17 @@ describe('installed Chromium extension — hybrid reading continuity', { skip: S
       if (!content) return null;
       return { maxWidth: getComputedStyle(content).maxWidth, width: content.getBoundingClientRect().width };
     }`;
+    const initial = await evalJs<{ maxWidth: string; width: number }>(page, widthJs);
+    assert.ok(initial.maxWidth === '100%' || initial.maxWidth === 'none');
+
+    await page.locator('#toggle-toc-btn').click();
+    await waitFor(page, `() => getComputedStyle(document.getElementById('page-header')).display === 'flex'`);
+    // The default cycle is fullscreen -> narrow -> normal.
+    await page.locator('#layout-toggle-btn').click();
+    await page.locator('#layout-toggle-btn').click();
+    await waitFor(page, `() => getComputedStyle(document.querySelector(
+      '#mv-hybrid-editor-input .md-editor-content',
+    )).maxWidth === '1360px'`);
     const normal = await evalJs<{ maxWidth: string; width: number }>(page, widthJs);
     assert.equal(normal.maxWidth, '1360px');
 

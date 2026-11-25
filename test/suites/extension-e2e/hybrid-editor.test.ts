@@ -79,6 +79,19 @@ describe('installed Chromium extension — hybrid Markdown editor', { skip: SKIP
     await page.locator('#toggle-edit-btn').click();
     await waitFor(page, `() => document.documentElement.dataset.sourceEditor === 'hybrid'`);
     await waitFor(page, `() => document.querySelectorAll('#mv-hybrid-editor-input .md-block').length > 0`);
+
+    // These editing tests use the original normal-width, visible-toolbar setup.
+    // The new minimal/fullscreen defaults have their own dedicated E2E suite.
+    if (!await evalJs<boolean>(page, `() => document.body.classList.contains('reader-controls-open')`)) {
+      await page.locator('#toggle-toc-btn').click();
+    }
+    await waitFor(page, `() => getComputedStyle(document.getElementById('page-header')).display === 'flex'`);
+    const initialWidth = await evalJs<string>(page, `() => document.getElementById('markdown-page').style.maxWidth`);
+    const layoutClicks = initialWidth === '100%' ? 2 : initialWidth === '680px' ? 1 : 0;
+    for (let index = 0; index < layoutClicks; index += 1) {
+      await page.locator('#layout-toggle-btn').click();
+    }
+    await waitFor(page, `() => document.getElementById('markdown-page').style.maxWidth === '1360px'`);
   });
 
   after(async () => {

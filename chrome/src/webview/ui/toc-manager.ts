@@ -207,8 +207,8 @@ export function createTocManager(
       } else if (savedState?.tocVisible !== undefined) {
         shouldBeVisible = savedState.tocVisible;
       } else {
-        // No saved state - only mobile uses collapsed TOC by default.
-        shouldBeVisible = !isMobile;
+        // Browser reading starts minimal; the floating trigger also owns the header.
+        shouldBeVisible = false;
       }
       
       const currentlyVisible = !tocDiv.classList.contains('hidden');
@@ -257,9 +257,13 @@ export function createTocManager(
         overlayDiv.classList.add('hidden');
       }
       
+      const visible = !willBeHidden;
+      document.body.classList.toggle('reader-controls-open', visible);
+      document.getElementById('toggle-toc-btn')?.setAttribute('aria-expanded', String(visible));
+
       // Save TOC visibility state
       saveFileState({
-        tocVisible: !willBeHidden
+        tocVisible: visible
       });
     };
 

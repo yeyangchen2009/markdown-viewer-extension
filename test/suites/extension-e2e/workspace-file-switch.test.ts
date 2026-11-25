@@ -11,7 +11,7 @@
  *     only the content;
  *   - cross extension (`.md` ⇄ code/text) — the resolved mode flips between
  *     `rendered` and `code-reading`, which also flips the card chrome
- *     (full-bleed code surface vs 1360px reading card) and the toolbar buttons.
+ *     (full-bleed code surface vs the reading card) and the toolbar buttons.
  *
  * The source-view variants are the ones that used to look wrong: leaving a file
  * in source view and opening another one must render the *new* file in its own
@@ -42,8 +42,8 @@ import {
 
 const SKIP_EXT = process.env.MV_SKIP_EXT_TESTS === '1';
 
-/** Reading card width owned by READING_MAX_WIDTH_PX (src/ui/layout-presets.ts). */
-const READING_MAX_WIDTH = 1360;
+/** New documents start in the full-width reading preset. */
+const DEFAULT_CARD_MAX_WIDTH = '100%';
 
 const FILES: Record<string, string | Record<string, string>> = {
   'alpha.md': '# Alpha doc\n\nAlpha body.\n',
@@ -119,7 +119,7 @@ function assertMarkdownState(state: ViewerState, heading: string, label: string)
   assert.equal(state.hasSourceText, false, `${label}: no source surface in the rendered view`);
   assert.equal(state.tocDisabled, undefined, `${label}: markdown keeps its TOC`);
   assert.deepEqual(state.headings, [heading], `${label}: rendered heading`);
-  assert.equal(state.cardMaxWidth, `${READING_MAX_WIDTH}px`, `${label}: reading measure`);
+  assert.equal(state.cardMaxWidth, DEFAULT_CARD_MAX_WIDTH, `${label}: full-width reading measure`);
   assert.notEqual(state.cardShadow, 'none', `${label}: the reading card keeps its shadow`);
   assert.notEqual(state.cardBackground, 'rgba(0, 0, 0, 0)', `${label}: the reading card keeps its surface`);
   assert.equal(state.sourceToggleDisplay, 'flex', `${label}: source toggle offered`);

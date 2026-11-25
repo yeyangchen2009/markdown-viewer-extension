@@ -19,7 +19,7 @@ type SessionState = ViewerSessionSnapshot & {
   rawContent: string;
 };
 
-const DEFAULT_LAYOUT_MODE: ViewerLayoutMode = 'normal';
+const DEFAULT_LAYOUT_MODE: ViewerLayoutMode = 'fullscreen';
 const DEFAULT_MODE_INTENT: ViewerModeIntent = 'rendered';
 const DEFAULT_ZOOM_PERCENT = 100;
 
@@ -35,7 +35,7 @@ function createInitialState(): SessionState {
     pendingAnchor: undefined,
     themeId: undefined,
     zoomPercent: DEFAULT_ZOOM_PERCENT,
-    tocVisible: true,
+    tocVisible: false,
     predictedHasHeadings: undefined,
     layoutMode: DEFAULT_LAYOUT_MODE,
     rawContent: '',

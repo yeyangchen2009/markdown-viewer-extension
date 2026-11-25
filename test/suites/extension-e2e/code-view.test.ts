@@ -22,9 +22,8 @@
  *      *outside* `#markdown-page`, and switching to it hides the rendered page
  *      instead of clearing it.
  *
- * It also pins the reading card end to end (1360px), the number the toolbar
- * writes inline and test/suites/project-gates/reading-measure.test.ts guards
- * against drift.
+ * It also pins the full-width reading card end to end, including the inline
+ * preset written by the toolbar.
  *
  * Needs `npm run build:chrome` + Playwright Chromium. Skip with
  * MV_SKIP_EXT_TESTS=1.
@@ -56,8 +55,8 @@ import {
 
 const SKIP_EXT = process.env.MV_SKIP_EXT_TESTS === '1';
 
-/** Reading card width owned by READING_MAX_WIDTH_PX (src/ui/layout-presets.ts). */
-const READING_MAX_WIDTH = 1360;
+/** New documents use the full-width reading preset. */
+const DEFAULT_CARD_MAX_WIDTH = '100%';
 
 const TEXT_LINES = [
   'plain text line 1',
@@ -227,13 +226,12 @@ describe('installed Chrome extension — code view frame & source toggle', { ski
       sourceView: string | undefined;
     }>(page, TOOLBAR_STATE_JS);
 
-    // The card asks for the reading measure; the docked TOC leaves less room,
-    // so the rendered width is the measure capped by the reading area.
-    assert.equal(rendered.cardMaxWidth, `${READING_MAX_WIDTH}px`, 'markdown keeps the reading measure');
+    // The card fills the reading area when the default full-width preset is active.
+    assert.equal(rendered.cardMaxWidth, DEFAULT_CARD_MAX_WIDTH, 'markdown starts at the full-width reading measure');
     assert.equal(
       rendered.cardWidth,
-      Math.min(READING_MAX_WIDTH, rendered.readingAreaWidth ?? 0),
-      'the card fills the reading measure without overflowing the reading area',
+      rendered.readingAreaWidth,
+      'the card fills the reading area without overflowing it',
     );
     assert.equal(rendered.layoutVisible, true, 'the width control is available while reading');
     assert.equal(rendered.sourceToggleVisible, true, 'markdown offers the source toggle');
