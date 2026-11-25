@@ -218,6 +218,12 @@ describe('installed Chrome extension — "Save File" naming', { skip: SKIP_EXT }
     downloadSource: Page = page,
   ): Promise<{ filename: string; body: string }> {
     const downloadPromise = downloadSource.waitForEvent('download', { timeout: 30000 });
+    const needsHeader = await evalJs<boolean>(target, `() => !document.body.classList.contains('mv-embed')
+      && !document.body.classList.contains('reader-controls-open')`);
+    if (needsHeader) {
+      await target.click('#toggle-toc-btn');
+      await target.waitForSelector('#page-header', { state: 'visible' });
+    }
 
     // The toolbar wires its listeners a moment after the viewer renders, so a
     // click that lands in that window opens nothing. Repeat the interaction

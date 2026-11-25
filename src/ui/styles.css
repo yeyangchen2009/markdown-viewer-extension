@@ -198,6 +198,10 @@ body {
   z-index: 1001;
 }
 
+body:not(.reader-controls-open) #page-header {
+  display: none;
+}
+
 /* Content row: main column + resize handle + GitBook sidebar */
 #page-content {
   flex: 1;
@@ -304,6 +308,39 @@ body {
 .toolbar-btn svg {
   fill: none;
   stroke: currentColor;
+}
+
+/* Minimal reader chrome: edit above the shared header/TOC trigger. */
+#reader-controls {
+  position: fixed;
+  left: 20px;
+  bottom: 20px;
+  z-index: 1100;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#reader-controls .toolbar-btn {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: 6px;
+  background: var(--color-bg-surface, var(--color-bg-body));
+  box-shadow: var(--shadow-toolbar);
+  opacity: 0.72;
+}
+
+#reader-controls .toolbar-btn:hover,
+#reader-controls .toolbar-btn:focus-visible,
+#reader-controls .toolbar-btn[aria-pressed='true'],
+body.reader-controls-open #toggle-toc-btn {
+  opacity: 1;
+}
+
+#reader-controls .toolbar-btn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
 }
 
 .toolbar-menu-trigger {
@@ -786,6 +823,10 @@ body.remark-panel-open.toc-position-right #markdown-wrapper {
    Platforms only add the class(es) + map their theme variables — no per-
    platform style sheets. */
 .mv-embed #page-header,
+.mv-embed #reader-controls {
+  display: none !important;
+}
+
 .mv-embed #toolbar {
   display: none !important;
 }
@@ -1406,6 +1447,11 @@ html[data-source-editor='hybrid'] #markdown-wrapper {
     padding: 0 10px;
   }
 
+  #reader-controls {
+    left: calc(16px + env(safe-area-inset-left, 0px));
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  }
+
   .file-name {
     display: none;
   }
@@ -1557,6 +1603,7 @@ html[data-source-editor='hybrid'] #markdown-wrapper {
   /* Hide toolbar header, TOC and overlay completely when printing */
   #page-header,
   #toolbar,
+  #reader-controls,
   #table-of-contents,
   #toc-overlay,
   #remark-sidebar,

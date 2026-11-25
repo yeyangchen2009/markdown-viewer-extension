@@ -29,6 +29,7 @@ describe('installed Chrome extension — Markdown source editor', { skip: SKIP_E
   let page: Page;
   let fixtureDir = '';
   let fileUrl = '';
+  let hasEditContext = false;
 
   before(async () => {
     fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mv-source-editor-'));
@@ -78,8 +79,11 @@ describe('installed Chrome extension — Markdown source editor', { skip: SKIP_E
     await page.goto(fileUrl, { waitUntil: 'load' });
     await waitFor(page, WAIT_STANDALONE_READY_JS);
     await waitFor(page, VIEWER_UNVEILED_JS);
-    await evalJs(page, `() => { document.getElementById('toggle-edit-btn').click(); return true; }`);
-    await waitFor(page, `() => document.documentElement.dataset.sourceEditor === 'hybrid'`);
+    hasEditContext = await evalJs<boolean>(page, `() => typeof window.EditContext === 'function'`);
+    if (hasEditContext) {
+      await evalJs(page, `() => { document.getElementById('toggle-edit-btn').click(); return true; }`);
+      await waitFor(page, `() => document.documentElement.dataset.sourceEditor === 'hybrid'`);
+    }
   });
 
   after(async () => {
@@ -114,7 +118,11 @@ describe('installed Chrome extension — Markdown source editor', { skip: SKIP_E
     )?.textContent.includes(${JSON.stringify(readyText)}) === true`);
   }
 
-  it('edits only in Preview without replacing the editor or repainting the reading DOM', async () => {
+  it('edits only in Preview without replacing the editor or repainting the reading DOM', async (t) => {
+    if (!hasEditContext) {
+      t.skip('EditContext is unavailable in this browser');
+      return;
+    }
     assert.equal(await page.locator('#mv-editor-preview-mode').count(), 0);
     assert.equal(await page.locator('#mv-editor-source-mode').count(), 0);
     assert.equal(await page.locator('#mv-source-editor-input').count(), 0);
@@ -141,7 +149,11 @@ describe('installed Chrome extension — Markdown source editor', { skip: SKIP_E
     );
   });
 
-  it('preserves a dirty draft on external changes and loads disk only on confirmation', async () => {
+  it('preserves a dirty draft on external changes and loads disk only on confirmation', async (t) => {
+    if (!hasEditContext) {
+      t.skip('EditContext is unavailable in this browser');
+      return;
+    }
     await sendExternalContent(EXTERNAL);
     await waitFor(page, `() => !document.getElementById('mv-source-editor-conflict').hidden`);
     assert.match(
@@ -171,7 +183,11 @@ describe('installed Chrome extension — Markdown source editor', { skip: SKIP_E
     await waitFor(page, `() => document.getElementById('save-source-btn').dataset.dirty === 'false'`);
   });
 
-  it('writes back through MAIN world and keeps typing after a save snapshot dirty', async () => {
+  it('writes back through MAIN world and keeps typing after a save snapshot dirty', async (t) => {
+    if (!hasEditContext) {
+      t.skip('EditContext is unavailable in this browser');
+      return;
+    }
     await waitFor(page, `() => document.documentElement.dataset.mvSourceFileWriter === 'ready'`);
     const newerDraft = `${DRAFT}Typed while saving.\n`;
 

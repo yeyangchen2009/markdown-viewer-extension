@@ -163,6 +163,11 @@ interface IncomingBroadcastMessage {
   payload?: unknown;
 }
 
+function isSourceEditorRuntimeSupported(): boolean {
+  const constructor = (window as Window & { EditContext?: unknown }).EditContext;
+  return typeof constructor === 'function';
+}
+
 /**
  * Initialize the viewer with platform-specific options
  */
@@ -203,21 +208,6 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
   function applyTocPanelSide(swapped: boolean): void {
     document.body.classList.toggle('toc-position-right', swapped);
     document.body.classList.toggle('gitbook-sidebar-left', swapped);
-
-    const toggleTocBtn = document.getElementById('toggle-toc-btn');
-    const toolbarLeft = document.querySelector('.toolbar-left');
-    const toolbarRight = document.querySelector('.toolbar-right');
-
-    if (!toggleTocBtn || !toolbarLeft || !toolbarRight) {
-      return;
-    }
-
-    if (swapped) {
-      toolbarRight.prepend(toggleTocBtn);
-    } else {
-      toolbarLeft.prepend(toggleTocBtn);
-    }
-
     syncResizeHandlePosition?.();
   }
 
@@ -898,18 +888,8 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     return document.documentElement.dataset.tocDisabled === '1';
   };
 
-  const applyTocButtonVisibility = (): void => {
-    const tocBtn = document.getElementById('toggle-toc-btn');
-    if (!tocBtn) return;
-    if (isTocDisabledForCurrentFile()) {
-      tocBtn.style.display = 'none';
-    } else {
-      tocBtn.style.display = '';
-    }
-  };
-
   const applyPredictedTocLayout = (hasHeadings: boolean | undefined, tocVisible = initialTocVisible): void => {
-    applyTocButtonVisibility();
+    toolbarManager.setReaderControlsOpen(tocVisible);
 
     if (isTocDisabledForCurrentFile()) {
       hideTocForCodeView();
@@ -1041,7 +1021,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
   const initialLayout: LayoutMode =
     initialState.layoutMode && layoutConfigs[initialState.layoutMode as LayoutMode]
       ? (initialState.layoutMode as LayoutMode)
-      : 'normal';
+      : 'fullscreen';
   const initialMaxWidth = layoutConfigs[initialLayout].maxWidth;
   const initialZoom = initialState.zoom || 100;
   const initialSwapPanelSide = await platform.settings.get('swapPanelSide');
@@ -1235,14 +1215,12 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
     enableSourceToggle: true,
     enableRemarkMode: true,
   });
-  if (!initialTocVisible) {
-    document.body.classList.add('toc-hidden');
-  }
+  document.body.classList.toggle('toc-hidden', !initialTocVisible);
+  toolbarManager.setReaderControlsOpen(initialTocVisible);
   applyTocPanelSide(Boolean(initialSwapPanelSide));
-  applyTocButtonVisibility();
 
   const sourceEditorHost = document.getElementById('viewer-main-column');
-  if (sourceEditorHost) {
+  if (sourceEditorHost && isSourceEditorRuntimeSupported()) {
     sourceEditor = createSourceEditor({
       host: sourceEditorHost,
       renderer: platform.renderer,
@@ -1632,7 +1610,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
   };
 
   function isSourceEditorSupported(): boolean {
-    if (htmlConverted || window.parent !== window || isSlidevFile(getViewerDocumentLocation())) {
+    if (!sourceEditor || htmlConverted || window.parent !== window || isSlidevFile(getViewerDocumentLocation())) {
       return false;
     }
     const format = getViewerSnapshot()?.document?.format;

@@ -95,7 +95,7 @@ export function createToolbarManager(options: ToolbarManagerOptions): ToolbarMan
 
   // Current layout mode (normal | fullscreen | narrow). Lives at manager scope
   // so applyLocale can refresh the layout button tooltip without a reload.
-  let currentLayout = 'normal';
+  let currentLayout = 'fullscreen';
 
   // Remark Mode controller
   let remarkController: RemarkModeController | null = null;
@@ -443,12 +443,22 @@ export function createToolbarManager(options: ToolbarManagerOptions): ToolbarMan
     setupToolbarButtons();
   }
 
+  /** Keep the floating trigger and header aligned with the requested state. */
+  function setReaderControlsOpen(open: boolean): void {
+    document.body.classList.toggle('reader-controls-open', open);
+    document.getElementById('toggle-toc-btn')?.setAttribute('aria-expanded', String(open));
+  }
+
   /**
-   * Toggle TOC visibility (shared by the toolbar button and the Ctrl/Cmd+B
-   * keyboard shortcut). Delegates to the host callback when provided, else
+   * Toggle reading controls and TOC visibility (shared by the floating button
+   * and Ctrl/Cmd+B). Delegates to the host callback when provided, else
    * toggles the DOM state directly.
    */
   function setTocVisibility(visible: boolean): void {
+    // The trigger owns both the header and the TOC. Keep the user's requested
+    // control state even when this document has no headings to put in a TOC.
+    setReaderControlsOpen(visible);
+    document.body.classList.toggle('toc-hidden', !visible);
     if (onSetTocVisibility) {
       onSetTocVisibility(visible);
       return;
@@ -456,16 +466,11 @@ export function createToolbarManager(options: ToolbarManagerOptions): ToolbarMan
 
     const tocDiv = document.getElementById('table-of-contents');
     const overlayDiv = document.getElementById('toc-overlay');
-    if (!tocDiv || !overlayDiv) {
-      return;
-    }
-
-    tocDiv.classList.toggle('hidden', !visible);
-    document.body.classList.toggle('toc-hidden', !visible);
+    tocDiv?.classList.toggle('hidden', !visible);
     if (isMobile && visible) {
-      overlayDiv.classList.remove('hidden');
+      overlayDiv?.classList.remove('hidden');
     } else {
-      overlayDiv.classList.add('hidden');
+      overlayDiv?.classList.add('hidden');
     }
 
     saveFileState({
@@ -486,18 +491,10 @@ export function createToolbarManager(options: ToolbarManagerOptions): ToolbarMan
   function setupToolbarButtons(): void {
     // Toggle TOC button
     const toggleTocBtn = document.getElementById('toggle-toc-btn');
-    const tocDiv = document.getElementById('table-of-contents');
-    const overlayDiv = document.getElementById('toc-overlay');
 
-    if (toggleTocBtn && tocDiv && overlayDiv) {
+    if (toggleTocBtn) {
       toggleTocBtn.addEventListener('click', () => {
-        // If TOC has no content (no headings), do nothing
-        if (tocDiv.style.display === 'none') {
-          return;
-        }
-
-        const nextVisible = tocDiv.classList.contains('hidden');
-        setTocVisibility(nextVisible);
+        setTocVisibility(!document.body.classList.contains('reader-controls-open'));
       });
     }
 
@@ -554,7 +551,10 @@ export function createToolbarManager(options: ToolbarManagerOptions): ToolbarMan
         }
       };
 
-      applyLayout('normal', false);
+      const initialLayout = layoutSequence.find(
+        (layout) => layoutConfigs[layout].maxWidth === pageDiv.style.maxWidth,
+      ) || 'fullscreen';
+      applyLayout(initialLayout, false);
 
       layoutBtn.addEventListener('click', () => {
         if (!layoutSequence.includes(currentLayout)) {
@@ -567,17 +567,12 @@ export function createToolbarManager(options: ToolbarManagerOptions): ToolbarMan
         applyLayout(nextLayout);
       });
       
-      // Restore layout and zoom state once the handlers exist (see the note on
-      // setupToolbarButtons): the read is async, the interaction is not.
+      // The host has already restored layout before generating the DOM. Only
+      // zoom needs this asynchronous cosmetic restore; reapplying layout here
+      // could overwrite an early click with a stale read.
       void (async () => {
         const savedState = await getFileState();
 
-        // Restore layout mode
-        if (savedState.layoutMode && layoutConfigs[savedState.layoutMode]) {
-          applyLayout(savedState.layoutMode, false);
-        }
-        
-        // Restore zoom level
         if (savedState.zoom && typeof savedState.zoom === 'number') {
           applyZoom(savedState.zoom, false);
         }
@@ -864,14 +859,10 @@ export function createToolbarManager(options: ToolbarManagerOptions): ToolbarMan
    */
   function setupKeyboardShortcuts(): void {
     document.addEventListener('keydown', (e: KeyboardEvent) => {
-      // Ctrl/Cmd + B: Toggle TOC
+      // Ctrl/Cmd + B: Toggle the reading controls and available TOC.
       if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
         e.preventDefault();
-        const tocDiv = document.getElementById('table-of-contents');
-        if (tocDiv) {
-          const nextVisible = tocDiv.classList.contains('hidden');
-          setTocVisibility(nextVisible);
-        }
+        setTocVisibility(!document.body.classList.contains('reader-controls-open'));
         return;
       }
 
@@ -1012,6 +1003,7 @@ export function createToolbarManager(options: ToolbarManagerOptions): ToolbarMan
     applyLocale,
     setSourceToggleState,
     setEditState,
+    setReaderControlsOpen,
     setLayoutControlVisible
   };
 }
@@ -1050,17 +1042,13 @@ export function generateToolbarHTML(options: GenerateToolbarHTMLOptions): string
   const remarkModeTitleAttr = escapeHtml(remarkModeTitle);
   const toggleGitbookTitleAttr = escapeHtml(toolbarToggleGitbookTitle);
   const bookExportTitleAttr = escapeHtml(translate('book_export_title'));
+  const initialControlsOpen = !initialTocClass.split(/\s+/).includes('hidden');
 
   return `
   <div id="page-shell">
     <div id="page-header">
       <div id="toolbar">
         <div class="toolbar-left">
-          <button id="toggle-toc-btn" class="toolbar-btn" title="${toggleTocTitleAttr}">
-            <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
-              <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-            </svg>
-          </button>
           <span id="file-name" class="file-name"></span>
           <div id="processing-indicator" class="processing-indicator hidden">
             <svg class="progress-circle" width="18" height="18" viewBox="0 0 18 18">
@@ -1095,11 +1083,6 @@ export function generateToolbarHTML(options: GenerateToolbarHTMLOptions): string
             <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor">
               <path d="M7 6 3 10l4 4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
               <path d="m13 6 4 4-4 4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-          </button>
-          <button id="toggle-edit-btn" class="toolbar-btn" title="Edit Markdown" aria-label="Edit Markdown" aria-pressed="false" style="display: none;">
-            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor">
-              <path d="m13.5 3.5 3 3L7 16H4v-3L13.5 3.5Z" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
           </button>
           <button id="save-source-btn" class="toolbar-btn" title="Save Markdown (Ctrl+S)" aria-label="Save Markdown (Ctrl+S)" style="display: none;">
@@ -1158,6 +1141,18 @@ export function generateToolbarHTML(options: GenerateToolbarHTMLOptions): string
         <div id="gitbook-panel"></div>
       </aside>
     </div>
+  </div>
+  <div id="reader-controls" role="group" aria-label="Reader controls">
+    <button type="button" id="toggle-edit-btn" class="toolbar-btn" title="Edit Markdown" aria-label="Edit Markdown" aria-pressed="false" style="display: none;">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" aria-hidden="true">
+        <path d="m13.5 3.5 3 3L7 16H4v-3L13.5 3.5Z" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+    <button type="button" id="toggle-toc-btn" class="toolbar-btn" title="${toggleTocTitleAttr}" aria-label="${toggleTocTitleAttr}" aria-controls="page-header table-of-contents" aria-expanded="${initialControlsOpen}">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+    </button>
   </div>
   <div id="table-of-contents" class="${initialTocClass}"></div>
   <div id="toc-overlay" class="hidden"></div>
