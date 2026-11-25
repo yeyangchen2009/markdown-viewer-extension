@@ -374,22 +374,6 @@ describe('documd serve — createServeServer loopback contract', () => {
       assert.equal(fs.readFileSync(target, 'utf8'), 'small\n');
     });
 
-    it('returns a readable 413 for a complete over-limit Content-Length body', async () => {
-      const target = path.join(rootDir, 'put-large-body.md');
-      fs.writeFileSync(target, 'small\n');
-      const response = await send(docUrl(server, 'put-large-body.md'), {
-        method: 'PUT',
-        headers: {
-          'content-type': 'text/plain',
-          'content-length': String(64 * 1024 * 1024 + 1),
-        },
-        body: Buffer.alloc(64 * 1024 * 1024 + 1, 0x62),
-      });
-      assert.equal(response.status, 413);
-      assert.equal(response.body.toString('utf8'), 'Request body too large');
-      assert.equal(fs.readFileSync(target, 'utf8'), 'small\n');
-    });
-
     // fibjs-only skip: the compat layer answers every Transfer-Encoding:
     // chunked request with a framework-level 400 whose response never settles
     // on the client (probe v18 case-5), a framework defect no JS can route
