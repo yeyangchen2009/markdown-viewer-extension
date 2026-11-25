@@ -68,32 +68,36 @@ function firstOf(measurements: Array<{ selector: string; elements: any[] }>, sel
   return item.elements[0];
 }
 
-const MEASURE_JS = `(selectors) => selectors.map((selector) => {
-  const nodes = Array.from(document.querySelectorAll(selector));
-  return {
-    selector,
-    count: nodes.length,
-    elements: nodes.map((node) => {
-      const element = node;
-      const rect = element.getBoundingClientRect();
-      const style = getComputedStyle(element);
-      return {
-        left: rect.left, top: rect.top, width: rect.width, height: rect.height,
-        marginTop: style.marginTop, marginRight: style.marginRight,
-        marginBottom: style.marginBottom, marginLeft: style.marginLeft,
-        paddingTop: style.paddingTop, paddingRight: style.paddingRight,
-        paddingBottom: style.paddingBottom, paddingLeft: style.paddingLeft,
-        borderTopWidth: style.borderTopWidth, borderRightWidth: style.borderRightWidth,
-        borderBottomWidth: style.borderBottomWidth, borderLeftWidth: style.borderLeftWidth,
-        fontFamily: style.fontFamily, fontSize: style.fontSize, lineHeight: style.lineHeight,
-        fontWeight: style.fontWeight, fontStyle: style.fontStyle, color: style.color,
-        textDecorationLine: style.textDecorationLine, textAlign: style.textAlign,
-        textIndent: style.textIndent, display: style.display,
-        backgroundColor: style.backgroundColor, overflowX: style.overflowX, overflowY: style.overflowY,
-      };
-    }),
-  };
-})`;
+const MEASURE_JS = `({ rootSelector, selectors }) => {
+  const root = document.querySelector(rootSelector);
+  if (!root) throw new Error('Content root not found: ' + rootSelector);
+  return selectors.map((selector) => {
+    const nodes = Array.from(root.querySelectorAll(selector));
+    return {
+      selector,
+      count: nodes.length,
+      elements: nodes.map((node) => {
+        const element = node;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return {
+          left: rect.left, top: rect.top, width: rect.width, height: rect.height,
+          marginTop: style.marginTop, marginRight: style.marginRight,
+          marginBottom: style.marginBottom, marginLeft: style.marginLeft,
+          paddingTop: style.paddingTop, paddingRight: style.paddingRight,
+          paddingBottom: style.paddingBottom, paddingLeft: style.paddingLeft,
+          borderTopWidth: style.borderTopWidth, borderRightWidth: style.borderRightWidth,
+          borderBottomWidth: style.borderBottomWidth, borderLeftWidth: style.borderLeftWidth,
+          fontFamily: style.fontFamily, fontSize: style.fontSize, lineHeight: style.lineHeight,
+          fontWeight: style.fontWeight, fontStyle: style.fontStyle, color: style.color,
+          textDecorationLine: style.textDecorationLine, textAlign: style.textAlign,
+          textIndent: style.textIndent, display: style.display,
+          backgroundColor: style.backgroundColor, overflowX: style.overflowX, overflowY: style.overflowY,
+        };
+      }),
+    };
+  });
+}`;
 
 const COLLECT_CSS_JS = `() => {
   const CONTENT_TOKENS = ['#markdown-content', '#markdown-page', '.katex', '.hljs', '.mermaid', '.markmap', '.graphviz', '.plantuml', '.diagram'];
@@ -303,7 +307,14 @@ describe('installed Chrome extension (three open modes × full fixture matrix)',
     await waitFor(inlinePage, waitImagesJs('.markdown-viewer-content'));
   };
 
-  const measure = (mode: string, selectors: string[]) => evalJs(modeTarget(mode), MEASURE_JS, selectors);
+  // The hidden hybrid editor and the TOC contain the same tag/class names as
+  // the rendered document. Query only below the active content root: a
+  // document-wide first match can measure invisible editor chrome instead.
+  const measure = (mode: string, selectors: string[]) => evalJs(
+    modeTarget(mode),
+    MEASURE_JS,
+    { rootSelector: contentSel(mode), selectors },
+  );
 
   /** Selector for the content root in the given mode. */
   const contentSel = (mode: string) => (mode === 'inline' ? '.markdown-viewer-content' : '#markdown-content');
