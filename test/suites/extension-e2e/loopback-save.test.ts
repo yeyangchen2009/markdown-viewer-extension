@@ -72,9 +72,11 @@ describe('installed Chrome extension — loopback PUT write-back', { skip: SKIP_
   let notesPath = '';
   let secondPath = '';
   let crlfPath = '';
+  let oversizedPath = '';
   let documentUrl = '';
   let secondUrl = '';
   let crlfUrl = '';
+  let oversizedUrl = '';
   let downloadStarted = false;
 
   before(async () => {
@@ -82,16 +84,19 @@ describe('installed Chrome extension — loopback PUT write-back', { skip: SKIP_
     notesPath = path.join(rootDir, 'notes.md');
     secondPath = path.join(rootDir, 'second.md');
     crlfPath = path.join(rootDir, 'crlf.md');
+    oversizedPath = path.join(rootDir, 'oversized.md');
     fs.writeFileSync(notesPath, ORIGINAL, 'utf8');
     fs.writeFileSync(secondPath, SECOND_ORIGINAL, 'utf8');
     fs.writeFileSync(crlfPath, CRLF_ORIGINAL, 'utf8');
+    fs.writeFileSync(oversizedPath, ORIGINAL, 'utf8');
 
     // The production server on an ephemeral port so the suite never collides
     // with a manually run demo on the default 4317.
-    server = await createServeServer(rootDir, { port: 0, maxBodyMb: 1 });
+    server = await createServeServer(rootDir, { port: 0, maxBodyMb: 64 });
     documentUrl = server.urlFor('notes.md');
     secondUrl = server.urlFor('second.md');
     crlfUrl = server.urlFor('crlf.md');
+    oversizedUrl = server.urlFor('oversized.md');
 
     harness = await launchExtensionContext('mv-loopback-save-');
     page = await harness.context.newPage();
@@ -344,6 +349,31 @@ describe('installed Chrome extension — loopback PUT write-back', { skip: SKIP_
         'the initial DOM extraction must not normalize CRLF or discard the trailing newline');
     } finally {
       await crlfPage.close();
+    }
+  });
+
+  it('exposes a readable 413 to the browser for a complete oversized PUT', async () => {
+    const oversizedPage = await harness.context.newPage();
+    try {
+      await oversizedPage.goto(oversizedUrl, { waitUntil: 'load' });
+      await waitFor(oversizedPage, WAIT_STANDALONE_READY_JS);
+      await waitFor(oversizedPage, VIEWER_UNVEILED_JS);
+      const outcome = await oversizedPage.evaluate(async (url) => {
+        try {
+          const response = await fetch(url, {
+            method: 'PUT',
+            headers: { 'content-type': 'text/plain;charset=UTF-8' },
+            body: new Uint8Array(64 * 1024 * 1024 + 1).fill(0x62),
+          });
+          return { status: response.status, body: await response.text() };
+        } catch (error) {
+          return { error: String(error) };
+        }
+      }, oversizedUrl);
+      assert.deepEqual(outcome, { status: 413, body: 'Request body too large' });
+      assert.deepEqual(fs.readFileSync(oversizedPath), Buffer.from(ORIGINAL, 'utf8'));
+    } finally {
+      await oversizedPage.close();
     }
   });
 });
