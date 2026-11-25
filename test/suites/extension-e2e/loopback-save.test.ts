@@ -78,6 +78,7 @@ describe('installed Chrome extension — loopback PUT write-back', { skip: SKIP_
   let crlfUrl = '';
   let oversizedUrl = '';
   let downloadStarted = false;
+  let hasEditContext = false;
 
   before(async () => {
     rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mv-loopback-save-'));
@@ -117,8 +118,11 @@ describe('installed Chrome extension — loopback PUT write-back', { skip: SKIP_
     await page.goto(documentUrl, { waitUntil: 'load' });
     await waitFor(page, WAIT_STANDALONE_READY_JS);
     await waitFor(page, VIEWER_UNVEILED_JS);
-    await evalJs(page, `() => { document.getElementById('toggle-edit-btn').click(); return true; }`);
-    await waitFor(page, `() => document.documentElement.dataset.sourceEditor === 'hybrid'`);
+    hasEditContext = await evalJs<boolean>(page, `() => typeof window.EditContext === 'function'`);
+    if (hasEditContext) {
+      await evalJs(page, `() => { document.getElementById('toggle-edit-btn').click(); return true; }`);
+      await waitFor(page, `() => document.documentElement.dataset.sourceEditor === 'hybrid'`);
+    }
   });
 
   after(async () => {
@@ -127,7 +131,11 @@ describe('installed Chrome extension — loopback PUT write-back', { skip: SKIP_
     if (rootDir) fs.rmSync(rootDir, { recursive: true, force: true });
   });
 
-  it('PUTs the edited bytes straight to the loopback origin and clears the dirty state', async () => {
+  it('PUTs the edited bytes straight to the loopback origin and clears the dirty state', async (t) => {
+    if (!hasEditContext) {
+      t.skip('EditContext is unavailable in this browser');
+      return;
+    }
     // The MAIN-world writer marks this page ready as well. Waiting for it
     // proves the isolated PUT branch wins even when the bridge is available:
     // branch ordering is locked in source-file-writer.ts, and no picker can
@@ -215,10 +223,14 @@ describe('installed Chrome extension — loopback PUT write-back', { skip: SKIP_
     );
     assert.ok(Math.abs(scrollAfter - scrollBefore) <= 100,
       `scroll survives the external refresh (before=${scrollBefore}, after=${scrollAfter})`);
-    assert.equal(await evalJs<boolean>(page, `() => document.getElementById('mv-source-editor-conflict').hidden`), true);
+    assert.equal(await evalJs<boolean>(page, `() => document.getElementById('mv-source-editor-conflict')?.hidden !== false`), true);
   });
 
-  it('keeps a dirty draft on an external write, then overwrites only after confirmation', async () => {
+  it('keeps a dirty draft on an external write, then overwrites only after confirmation', async (t) => {
+    if (!hasEditContext) {
+      t.skip('EditContext is unavailable in this browser');
+      return;
+    }
     await evalJs(page, `() => { document.getElementById('toggle-edit-btn').click(); return true; }`);
     await waitFor(page, `() => document.documentElement.dataset.sourceEditor === 'hybrid'`);
     await page.locator('#mv-hybrid-editor-input .md-block').first().click();
@@ -270,7 +282,11 @@ describe('installed Chrome extension — loopback PUT write-back', { skip: SKIP_
     assert.equal(downloadStarted, false);
   });
 
-  it('moves the polling target across an in-place Markdown navigation without rewriting the source', async () => {
+  it('moves the polling target across an in-place Markdown navigation without rewriting the source', async (t) => {
+    if (!hasEditContext) {
+      t.skip('EditContext is unavailable in this browser');
+      return;
+    }
     await evalJs(page, `() => { document.getElementById('toggle-edit-btn').click(); return true; }`);
     await waitFor(page, `() => !document.documentElement.dataset.sourceEditor`);
     await waitFor(page, `() => document.querySelector('#markdown-content h1')?.textContent === 'Local draft'`);
@@ -326,7 +342,11 @@ describe('installed Chrome extension — loopback PUT write-back', { skip: SKIP_
     assert.equal(downloadStarted, false);
   });
 
-  it('preserves CRLF and the trailing newline from the initial loopback source', async () => {
+  it('preserves CRLF and the trailing newline from the initial loopback source', async (t) => {
+    if (!hasEditContext) {
+      t.skip('EditContext is unavailable in this browser');
+      return;
+    }
     const crlfPage = await harness.context.newPage();
     try {
       await crlfPage.goto(crlfUrl, { waitUntil: 'load' });

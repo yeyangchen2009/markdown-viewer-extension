@@ -8,6 +8,7 @@ import './context-menu-e2e.test.ts';
 import './browser-context-menu.test.ts';
 import './remote-document-images.test.ts';
 import './query-string-preview.test.ts';
+import './edit-context.test.ts';
 import './minimal-reader-controls.test.ts';
 import './save-file-name.test.ts';
 import './source-editor.test.ts';

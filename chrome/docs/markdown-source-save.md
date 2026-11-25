@@ -50,7 +50,7 @@ flowchart TD
 - **模型保存必须保留精确换行。** 权威文本不经过 textarea，Preview 编辑和保存读取同一份 `EditorModel.sourceText` 快照，设计目标是未修改的 CRLF、LF 和末尾换行不被 DOM 规范化改写。2026-11-24 的真实 Edge 验收却发现 CRLF 与末尾换行仍会在 loopback 保存时丢失，详见下方实测记录；独立修复前不得把这条设计约束写成已验收能力。
 - **图表继续走原安全渲染服务。** Mermaid 等非活动 fence 复用 `platform.renderer.render()` 和 `createPluginResultElement()`。组件对自定义块缺少可靠命中映射，因此占位根节点的 `pointerdown` 通过 AST 累计偏移和 `CodeBlockAstNode.codeOffset` 设置 `Selection.collapsed()`；收集时排除已展开的活动图表，保证连续点击多个图表不会错位。渲染失败保留原始 fence 可编辑。
 - **同源文本，不等于同渲染管线。** Preview 使用 VS Code 组件内建的 Markdown 块渲染；完整阅读态继续使用原 markdown-it、目录、锚点、图表和导出管线。Slidev、HTML 转 Markdown、workspace/嵌入模式不开放本地源码编辑入口。
-- **运行要求是支持 `EditContext` 的现代 Chromium。** 当前构建目标为 Chrome 120；旧浏览器或不完整实现不开放混合编辑入口，不退化为简单 `contenteditable`。
+- **运行要求是支持 `EditContext` 的现代 Chromium。** Preview 混合编辑要求 Chrome 121 或更新版本；构建目标中的 Chrome 120 保留阅读与独立只读 Source View，但隐藏混合编辑和保存入口，不退化为简单 `contenteditable`。
 
 ### 阅读位置与布局连续性
 

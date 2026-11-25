@@ -58,6 +58,7 @@ const STATE_JS = `() => {
 describe('minimal reader controls', { skip: SKIP_EXT }, () => {
   let harness: ExtensionContextHarness;
   let page: Page;
+  let hasEditContext = false;
   const pageErrors: string[] = [];
   const headingsUrl = pathToFileURL(path.resolve('test/fixtures/layout/headings.md')).href;
 
@@ -76,7 +77,10 @@ describe('minimal reader controls', { skip: SKIP_EXT }, () => {
     page = await harness.context.newPage();
     page.on('pageerror', (error) => pageErrors.push(String(error)));
     await openFixture(headingsUrl, true);
-    await waitFor(page, `() => getComputedStyle(document.getElementById('toggle-edit-btn')).display !== 'none'`);
+    hasEditContext = await evalJs<boolean>(page, `() => typeof window.EditContext === 'function'`);
+    if (hasEditContext) {
+      await waitFor(page, `() => getComputedStyle(document.getElementById('toggle-edit-btn')).display !== 'none'`);
+    }
   });
 
   after(async () => {
@@ -109,9 +113,11 @@ describe('minimal reader controls', { skip: SKIP_EXT }, () => {
     assert.equal(initial.controlsOutsideHeader, true);
     assert.equal(initial.controlsLeft, 20);
     assert.equal(initial.controlsBottom, 20);
-    assert.equal(initial.editAboveTrigger, true);
-    assert.equal(initial.buttonsAligned, true);
-    assert.equal(initial.editDisplay, 'flex');
+    if (hasEditContext) {
+      assert.equal(initial.editAboveTrigger, true);
+      assert.equal(initial.buttonsAligned, true);
+    }
+    assert.equal(initial.editDisplay, hasEditContext ? 'flex' : 'none');
     assert.equal(initial.triggerExpanded, 'false');
     assert.equal(initial.inlineMaxWidth, '100%');
     assert.ok(Math.abs(initial.pageWidth - initial.wrapperWidth) < 1);
@@ -139,7 +145,11 @@ describe('minimal reader controls', { skip: SKIP_EXT }, () => {
       && document.body.classList.contains('toc-hidden')`);
   });
 
-  it('enters and exits the existing Preview editor through the floating pen', async () => {
+  it('enters and exits the existing Preview editor through the floating pen', async (t) => {
+    if (!hasEditContext) {
+      t.skip('EditContext is unavailable in this browser');
+      return;
+    }
     await page.locator('#toggle-edit-btn').click();
     await waitFor(page, `() => document.documentElement.dataset.sourceEditor === 'hybrid'
       && document.getElementById('toggle-edit-btn').getAttribute('aria-pressed') === 'true'`);

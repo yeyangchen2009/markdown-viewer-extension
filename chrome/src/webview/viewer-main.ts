@@ -163,6 +163,11 @@ interface IncomingBroadcastMessage {
   payload?: unknown;
 }
 
+function isSourceEditorRuntimeSupported(): boolean {
+  const constructor = (window as Window & { EditContext?: unknown }).EditContext;
+  return typeof constructor === 'function';
+}
+
 /**
  * Initialize the viewer with platform-specific options
  */
@@ -1215,7 +1220,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
   applyTocPanelSide(Boolean(initialSwapPanelSide));
 
   const sourceEditorHost = document.getElementById('viewer-main-column');
-  if (sourceEditorHost) {
+  if (sourceEditorHost && isSourceEditorRuntimeSupported()) {
     sourceEditor = createSourceEditor({
       host: sourceEditorHost,
       renderer: platform.renderer,
@@ -1605,7 +1610,7 @@ export async function initializeViewerMain(options: ViewerMainOptions): Promise<
   };
 
   function isSourceEditorSupported(): boolean {
-    if (htmlConverted || window.parent !== window || isSlidevFile(getViewerDocumentLocation())) {
+    if (!sourceEditor || htmlConverted || window.parent !== window || isSlidevFile(getViewerDocumentLocation())) {
       return false;
     }
     const format = getViewerSnapshot()?.document?.format;
