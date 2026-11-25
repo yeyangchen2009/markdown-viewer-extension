@@ -3,6 +3,7 @@
 // Supports both Chrome (chrome.*) and Firefox (browser.*) APIs
 
 import { getWebExtensionApi } from '../../../src/utils/platform-info';
+import { isLoopbackHttpUrl } from '../../../src/utils/document-url';
 import { decodeBytes, detectByteEncoding, hasMojibakeSymptoms } from '../../../src/utils/encoding-recovery';
 
 import {
@@ -144,8 +145,12 @@ async function injectContentScript(): Promise<void> {
 
   const url = document.location.href;
   const bodyText = document.body?.textContent || '';
-  // Only refetch when the decoded DOM shows clear misdecoding symptoms.
-  if (/^https?:/i.test(url) && hasMojibakeSymptoms(bodyText)) {
+  const loopbackSource = isLoopbackHttpUrl(url);
+  let exactRawText: string | null = null;
+  // The browser's text DOM normalizes CRLF and loses trailing-newline
+  // information. Loopback write-back needs the decoded response bytes as its
+  // authoritative source; other HTTP documents only refetch for mojibake.
+  if (/^https?:/i.test(url) && (loopbackSource || hasMojibakeSymptoms(bodyText))) {
     try {
       const response = await fetch(url, { credentials: 'same-origin' });
       if (response.ok) {
@@ -156,9 +161,11 @@ async function injectContentScript(): Promise<void> {
         // correctly must not be touched.
         const encoding = detectByteEncoding(bytes);
         const recovered = encoding ? decodeBytes(bytes, encoding) : null;
-        // Skip rewriting when the detected encoding reproduces what the
-        // browser already decoded (the text is intact) or yielded nothing.
-        if (document.body && recovered && recovered !== bodyText) {
+        if (loopbackSource) {
+          exactRawText = recovered;
+        } else if (document.body && recovered && recovered !== bodyText) {
+          // Skip rewriting when the detected encoding reproduces what the
+          // browser already decoded (the text is intact) or yielded nothing.
           document.body.textContent = recovered;
         }
       }
@@ -175,7 +182,7 @@ async function injectContentScript(): Promise<void> {
   // finish initializing before the hide is removed. The text is stashed on
   // the isolated-world window (content scripts and the injected main.js
   // share that world) for the viewer to pick up.
-  const stashedText = document.body?.textContent || '';
+  const stashedText = exactRawText ?? document.body?.textContent ?? '';
   if (stashedText) {
     try {
       (window as unknown as { __mvStashedRawContent?: string }).__mvStashedRawContent = stashedText;

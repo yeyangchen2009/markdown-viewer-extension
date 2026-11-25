@@ -59,6 +59,8 @@ const SECOND_LINKS = '\n[Back to notes](notes.md)\n\n[Notes reference][notes]\n\
 const SECOND_ORIGINAL = `# Second original\n\nSecond document body.\n${SECOND_LINKS}`;
 const SECOND_SAVED = SECOND_ORIGINAL.replace('# Second original', '# Second original saved');
 const SECOND_CHANGED = `# Second changed\n\nPolled after in-place navigation.\n${SECOND_LINKS}`;
+const CRLF_ORIGINAL = '# CRLF loopback\r\n\r\nLine one.\r\n\r\nLine two.\r\n';
+const CRLF_SAVED = CRLF_ORIGINAL.replace('# CRLF loopback', '# CRLF loopback saved');
 
 type ServeServer = Awaited<ReturnType<typeof createServeServer>>;
 
@@ -69,22 +71,27 @@ describe('installed Chrome extension — loopback PUT write-back', { skip: SKIP_
   let rootDir = '';
   let notesPath = '';
   let secondPath = '';
+  let crlfPath = '';
   let documentUrl = '';
   let secondUrl = '';
+  let crlfUrl = '';
   let downloadStarted = false;
 
   before(async () => {
     rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mv-loopback-save-'));
     notesPath = path.join(rootDir, 'notes.md');
     secondPath = path.join(rootDir, 'second.md');
+    crlfPath = path.join(rootDir, 'crlf.md');
     fs.writeFileSync(notesPath, ORIGINAL, 'utf8');
     fs.writeFileSync(secondPath, SECOND_ORIGINAL, 'utf8');
+    fs.writeFileSync(crlfPath, CRLF_ORIGINAL, 'utf8');
 
     // The production server on an ephemeral port so the suite never collides
     // with a manually run demo on the default 4317.
     server = await createServeServer(rootDir, { port: 0, maxBodyMb: 1 });
     documentUrl = server.urlFor('notes.md');
     secondUrl = server.urlFor('second.md');
+    crlfUrl = server.urlFor('crlf.md');
 
     harness = await launchExtensionContext('mv-loopback-save-');
     page = await harness.context.newPage();
@@ -312,5 +319,31 @@ describe('installed Chrome extension — loopback PUT write-back', { skip: SKIP_
       'an external refresh keeps the navigated chapter as the rendering base');
     assert.deepEqual(fs.readFileSync(secondPath), Buffer.from(SECOND_CHANGED, 'utf8'));
     assert.equal(downloadStarted, false);
+  });
+
+  it('preserves CRLF and the trailing newline from the initial loopback source', async () => {
+    const crlfPage = await harness.context.newPage();
+    try {
+      await crlfPage.goto(crlfUrl, { waitUntil: 'load' });
+      await waitFor(crlfPage, WAIT_STANDALONE_READY_JS);
+      await waitFor(crlfPage, VIEWER_UNVEILED_JS);
+      await evalJs(crlfPage, `() => { document.getElementById('toggle-edit-btn').click(); return true; }`);
+      await waitFor(crlfPage, `() => document.documentElement.dataset.sourceEditor === 'hybrid'`);
+      await crlfPage.locator('#mv-hybrid-editor-input .md-block').first().click();
+      await crlfPage.keyboard.press('End');
+      await crlfPage.keyboard.insertText(' saved');
+      await waitFor(crlfPage, `() => document.getElementById('save-source-btn').dataset.dirty === 'true'`);
+
+      const put = crlfPage.waitForRequest((request) => (
+        request.url() === crlfUrl && request.method() === 'PUT'
+      ));
+      await crlfPage.keyboard.press('Control+s');
+      await waitFor(crlfPage, `() => document.getElementById('mv-source-editor-status').textContent === 'Saved to file'`);
+      assert.equal((await put).postData(), CRLF_SAVED);
+      assert.deepEqual(fs.readFileSync(crlfPath), Buffer.from(CRLF_SAVED, 'utf8'),
+        'the initial DOM extraction must not normalize CRLF or discard the trailing newline');
+    } finally {
+      await crlfPage.close();
+    }
   });
 });
