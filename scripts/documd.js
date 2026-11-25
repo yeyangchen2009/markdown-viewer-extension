@@ -815,10 +815,32 @@ export async function createServeServer(rootDir, options = {}) {
     };
     // Refusals emitted before the request body is consumed must close the
     // socket afterwards: an unread or Content-Length-short body would poison
-    // the keep-alive connection and hang its next request.
+    // the keep-alive connection and hang its next request. Never destroy the
+    // request from response 'finish': that is only a local write notification,
+    // so a reset there can discard the response before the client reads it.
     const rejectEarly = (status, message, extraHeaders = {}) => {
       response.writeHead(status, { ...commonHeaders, connection: 'close', ...extraHeaders }).end(message);
-      response.on('finish', () => request.destroy());
+    };
+    const rejectOversizedContentLength = () => {
+      if (process.versions.fibjs) {
+        rejectEarly(413, 'Request body too large');
+        return;
+      }
+      // Closing a socket with a large request still arriving can turn the 413
+      // into ECONNRESET / Failed to fetch. Drain without buffering and answer
+      // at EOF. A malformed client can instead declare a large length and stop
+      // uploading, so an idle timeout retains the original early refusal
+      // without imposing a total duration limit on a slow, active upload.
+      let replied = false;
+      const reply = () => {
+        if (replied) return;
+        replied = true;
+        request.setTimeout(0);
+        rejectEarly(413, 'Request body too large');
+      };
+      request.once('end', reply);
+      request.setTimeout(1000, reply);
+      request.resume();
     };
     try {
       if (!isLoopbackHost(request, actualPort)) {
@@ -909,8 +931,7 @@ export async function createServeServer(rootDir, options = {}) {
       }
       const contentLength = request.headers['content-length'];
       if (contentLength !== undefined && Number(contentLength) > maxBodyBytes) {
-        // Reject without consuming the body.
-        rejectEarly(413, 'Request body too large');
+        rejectOversizedContentLength();
         return;
       }
 

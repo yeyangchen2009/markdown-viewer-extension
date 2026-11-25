@@ -361,7 +361,7 @@ describe('documd serve — createServeServer loopback contract', () => {
     // the number of bytes actually written, so the "declare 2 MiB, send one
     // byte" shape cannot be constructed there (probe v18, 2026-11). The
     // pre-flight 413 branch stays fully covered under Node.
-    (IS_FIBJS ? it.skip : it)('rejects an over-limit Content-Length up front with 413, without consuming the body', async () => {
+    (IS_FIBJS ? it.skip : it)('rejects an incomplete over-limit Content-Length with 413 after the idle fallback', async () => {
       const target = path.join(rootDir, 'put-large-cl.md');
       fs.writeFileSync(target, 'small\n');
       const response = await send(docUrl(server, 'put-large-cl.md'), {
@@ -371,6 +371,22 @@ describe('documd serve — createServeServer loopback contract', () => {
         body: 'x',
       });
       assert.equal(response.status, 413);
+      assert.equal(fs.readFileSync(target, 'utf8'), 'small\n');
+    });
+
+    it('returns a readable 413 for a complete over-limit Content-Length body', async () => {
+      const target = path.join(rootDir, 'put-large-body.md');
+      fs.writeFileSync(target, 'small\n');
+      const response = await send(docUrl(server, 'put-large-body.md'), {
+        method: 'PUT',
+        headers: {
+          'content-type': 'text/plain',
+          'content-length': String(64 * 1024 * 1024 + 1),
+        },
+        body: Buffer.alloc(64 * 1024 * 1024 + 1, 0x62),
+      });
+      assert.equal(response.status, 413);
+      assert.equal(response.body.toString('utf8'), 'Request body too large');
       assert.equal(fs.readFileSync(target, 'utf8'), 'small\n');
     });
 
