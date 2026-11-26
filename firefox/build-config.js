@@ -84,9 +84,11 @@ export const createBuildConfig = () => {
     treeShaking: true,
     metafile: true,
     // Only mermaid is external (2.6MB) - loaded via separate script tag
+    // @vscode/diff has an unreachable Node-only dynamic import in the browser.
     external: [
       'mermaid',
       'web-worker',
+      'node:fs/promises',
     ],
     define: {
       'process.env.NODE_ENV': '"production"',
