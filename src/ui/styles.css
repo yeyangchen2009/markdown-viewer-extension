@@ -313,7 +313,7 @@ body:not(.reader-controls-open) #page-header {
 /* Minimal reader chrome: edit above the shared header/TOC trigger. */
 #reader-controls {
   position: fixed;
-  left: 20px;
+  right: 20px;
   bottom: 20px;
   z-index: 1100;
   display: flex;
@@ -1448,7 +1448,7 @@ html[data-source-editor='hybrid'] #markdown-wrapper {
   }
 
   #reader-controls {
-    left: calc(16px + env(safe-area-inset-left, 0px));
+    right: calc(16px + env(safe-area-inset-right, 0px));
     bottom: calc(16px + env(safe-area-inset-bottom, 0px));
   }
 

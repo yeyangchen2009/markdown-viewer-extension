@@ -41,7 +41,7 @@ const STATE_JS = `() => {
     contentTop: document.getElementById('page-content').getBoundingClientRect().top,
     controlsPosition: getComputedStyle(controls).position,
     controlsDisplay: getComputedStyle(controls).display,
-    controlsLeft: controlsRect.left,
+    controlsRight: innerWidth - controlsRect.right,
     controlsBottom: innerHeight - controlsRect.bottom,
     controlsOutsideHeader: !header.contains(controls),
     triggerExpanded: trigger.getAttribute('aria-expanded'),
@@ -102,7 +102,7 @@ describe('minimal reader controls', { skip: SKIP_EXT }, () => {
     await page.screenshot({ path: path.join(SCREENSHOT_DIR, `${name}.png`) });
   }
 
-  it('opens fullscreen with only the left-bottom edit and TOC controls', async () => {
+  it('opens fullscreen with only the right-bottom edit and TOC controls', async () => {
     const initial = await evalJs<any>(page, STATE_JS);
     assert.equal(initial.readerOpen, false);
     assert.equal(initial.bodyTocHidden, true);
@@ -111,7 +111,7 @@ describe('minimal reader controls', { skip: SKIP_EXT }, () => {
     assert.equal(initial.contentTop, 0);
     assert.equal(initial.controlsPosition, 'fixed');
     assert.equal(initial.controlsOutsideHeader, true);
-    assert.equal(initial.controlsLeft, 20);
+    assert.equal(initial.controlsRight, 20);
     assert.equal(initial.controlsBottom, 20);
     if (hasEditContext) {
       assert.equal(initial.editAboveTrigger, true);
@@ -234,9 +234,9 @@ describe('minimal reader controls', { skip: SKIP_EXT }, () => {
   it('stays inside a narrow viewport and disappears for embed and print', async () => {
     await page.setViewportSize({ width: 390, height: 700 });
     const narrow = await evalJs<any>(page, STATE_JS);
-    assert.equal(narrow.controlsLeft, 16);
+    assert.equal(narrow.controlsRight, 16);
     assert.equal(narrow.controlsBottom, 16);
-    assert.ok(narrow.controlsLeft >= 0 && narrow.controlsBottom >= 0);
+    assert.ok(narrow.controlsRight >= 0 && narrow.controlsBottom >= 0);
     await page.setViewportSize({ width: 1280, height: 720 });
 
     await page.emulateMedia({ media: 'print' });
